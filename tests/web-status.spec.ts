@@ -5,9 +5,13 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { WorkBuddyCredentialStore } from '../src/auth.ts'
 import { workBuddyStatusHandler } from '../src/web-status.ts'
+import type { WorkBuddyCreditsCacheEntry } from '../src/web-status.ts'
 import { WORKBUDDY_STATUS_PATH } from '../src/status-paths.ts'
 import type { WorkBuddyStatusRouteOptions } from '../src/web-status.ts'
 import type { WorkBuddyUpstreamModel } from '../src/upstream.ts'
+
+/** Process-local billing memo the route shares across requests. */
+type WorkBuddyCreditsCache = { entry?: WorkBuddyCreditsCacheEntry }
 
 const CLEANUP: (() => Promise<void>)[] = []
 
@@ -48,7 +52,10 @@ function requestOnce(options: {
   })
 }
 
-async function startStatusServer(overrides: Partial<WorkBuddyStatusRouteOptions> = {}): Promise<number> {
+async function startStatusServer(
+  overrides: Partial<WorkBuddyStatusRouteOptions> = {},
+  cache?: WorkBuddyCreditsCache,
+): Promise<number> {
   const dir = await mkdtemp(join(tmpdir(), 'wb-status-'))
   CLEANUP.push(() => rm(dir, { recursive: true, force: true }))
   const desktop = join(dir, 'workbuddy-desktop.info')
@@ -63,7 +70,7 @@ async function startStatusServer(overrides: Partial<WorkBuddyStatusRouteOptions>
     models: () => [],
     ...overrides,
   }
-  const server = createServer(workBuddyStatusHandler(deps))
+  const server = createServer(workBuddyStatusHandler(deps, cache))
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
   const { port } = server.address() as { port: number }
   CLEANUP.push(() => new Promise<void>(resolve => server.close(() => resolve())))
@@ -195,5 +202,122 @@ describe('maximum-context preference capability', () => {
     const document = JSON.parse(response.body) as Record<string, unknown>
     expect(document).not.toHaveProperty('useMaximumContextWindow')
     expect(document).toHaveProperty('probe')
+  })
+})
+
+describe('billing memo', () => {
+  /**
+   * The settings card and the composer's credit line poll this route
+   * independently. Without a memo each poll is a live billing call upstream, so
+   * two pollers double that endpoint's traffic for a figure that only moves
+   * when the user spends. These pin the collapse and, just as importantly, the
+   * cases where the memo must NOT be trusted.
+   */
+  it('collapses two polls inside the window into one upstream call', async () => {
+    let calls = 0
+    const cache: WorkBuddyCreditsCache = {}
+    const port = await startStatusServer({
+      client: {
+        fetchCredits: async () => {
+          calls += 1
+          return { total: 1_000, accounts: [] }
+        },
+      },
+    }, cache)
+
+    const first = await requestOnce({ port, method: 'GET', headers: { host: '127.0.0.1' } })
+    const second = await requestOnce({ port, method: 'GET', headers: { host: '127.0.0.1' } })
+
+    expect(calls).toBe(1)
+    // Both callers still receive the figure: a memo hit is invisible to them.
+    expect((JSON.parse(first.body) as { credits?: { total: number } }).credits?.total).toBe(1_000)
+    expect((JSON.parse(second.body) as { credits?: { total: number } }).credits?.total).toBe(1_000)
+  })
+
+  it('calls the upstream again once the window has passed', async () => {
+    let calls = 0
+    const cache: WorkBuddyCreditsCache = {}
+    const port = await startStatusServer({
+      client: {
+        fetchCredits: async () => {
+          calls += 1
+          return { total: calls, accounts: [] }
+        },
+      },
+    }, cache)
+
+    await requestOnce({ port, method: 'GET', headers: { host: '127.0.0.1' } })
+    // Age the entry past the TTL rather than waiting: the point under test is
+    // the expiry comparison, not the passage of real time.
+    cache.entry = { at: Date.now() - 60_000, credits: { total: 1, accounts: [] } }
+    const response = await requestOnce({ port, method: 'GET', headers: { host: '127.0.0.1' } })
+
+    expect(calls).toBe(2)
+    expect((JSON.parse(response.body) as { credits?: { total: number } }).credits?.total).toBe(2)
+  })
+
+  it('does not memoize a failure over a later success', async () => {
+    // A failed read must not be cached: otherwise a transient upstream error
+    // would keep being served after the upstream recovered.
+    let calls = 0
+    const cache: WorkBuddyCreditsCache = {}
+    const port = await startStatusServer({
+      client: {
+        fetchCredits: async () => {
+          calls += 1
+          if (calls === 1) throw new Error('upstream exploded')
+          return { total: 42, accounts: [] }
+        },
+      },
+    }, cache)
+
+    const failed = await requestOnce({ port, method: 'GET', headers: { host: '127.0.0.1' } })
+    expect((JSON.parse(failed.body) as { creditsError?: string }).creditsError).toContain('upstream exploded')
+    expect(cache.entry).toBeUndefined()
+
+    const recovered = await requestOnce({ port, method: 'GET', headers: { host: '127.0.0.1' } })
+    expect((JSON.parse(recovered.body) as { credits?: { total: number } }).credits?.total).toBe(42)
+    expect(cache.entry?.credits.total).toBe(42)
+  })
+
+  it('stays live when no memo is supplied', async () => {
+    // The route is mounted with a memo, but `workBuddyWebStatus`/the handler
+    // keep working without one so a caller can still force a live read.
+    let calls = 0
+    const port = await startStatusServer({
+      client: {
+        fetchCredits: async () => {
+          calls += 1
+          return { total: 7, accounts: [] }
+        },
+      },
+    })
+
+    await requestOnce({ port, method: 'GET', headers: { host: '127.0.0.1' } })
+    await requestOnce({ port, method: 'GET', headers: { host: '127.0.0.1' } })
+    expect(calls).toBe(2)
+  })
+
+  it('keeps each product\'s answer in its own memo', async () => {
+    // The two desktop products have separate accounts and separate balances, so
+    // a shared memo would report one product's credit under the other's route.
+    // Each mount owns its memo, which is what this pins.
+    const cn: WorkBuddyCreditsCache = {}
+    const ai: WorkBuddyCreditsCache = {}
+    const portOf = async (cache: WorkBuddyCreditsCache, total: number): Promise<number> =>
+      await startStatusServer({
+        client: { fetchCredits: async () => ({ total, accounts: [] }) },
+      }, cache)
+
+    const cnPort = await portOf(cn, 111)
+    const aiPort = await portOf(ai, 222)
+
+    const cnBody = JSON.parse((await requestOnce({ port: cnPort, method: 'GET', headers: { host: '127.0.0.1' } })).body) as { credits?: { total: number } }
+    const aiBody = JSON.parse((await requestOnce({ port: aiPort, method: 'GET', headers: { host: '127.0.0.1' } })).body) as { credits?: { total: number } }
+
+    expect(cnBody.credits?.total).toBe(111)
+    expect(aiBody.credits?.total).toBe(222)
+    expect(cn.entry?.credits.total).toBe(111)
+    expect(ai.entry?.credits.total).toBe(222)
   })
 })

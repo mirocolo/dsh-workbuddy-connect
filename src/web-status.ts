@@ -10,7 +10,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type { WorkBuddyCredentialStore } from './auth.ts'
-import type { WorkBuddyUpstreamClient } from './upstream.ts'
+import type { WorkBuddyCredits, WorkBuddyUpstreamClient } from './upstream.ts'
 import { normalizeCredits } from './upstream.ts'
 import type { WorkBuddyModelInfo } from './catalog.ts'
 import { hostIsLoopback, originIsLoopback } from './loopback.ts'
@@ -68,6 +68,31 @@ function safeMessage(error: unknown): string {
     .slice(0, 500)
 }
 
+/**
+ * How long an upstream billing answer may be reused.
+ *
+ * The settings card and the composer's credit line poll this route
+ * independently, and every miss is a live billing call to the upstream. Without
+ * a memo those two pollers multiply the billing endpoint's traffic for no
+ * user-visible gain: credit moves only when the user spends, so answers inside
+ * one window are the same answer. A short TTL collapses overlapping and
+ * back-to-back document builds into a single upstream call.
+ */
+const CREDITS_CACHE_TTL_MS = 30_000
+
+/**
+ * Max-age memo of one billing answer.
+ *
+ * Deliberately keyed by nothing: one credential is in effect per process, and
+ * the store's own `current()` is what selects it, so a credential change must
+ * also discard this. {@link registerWorkBuddyStatusRoute} therefore creates the
+ * memo per route registration and drops it whenever the route is remounted.
+ */
+export interface WorkBuddyCreditsCacheEntry {
+  at: number
+  credits: WorkBuddyCredits
+}
+
 function json(res: ServerResponse, status: number, body: unknown): void {
   const payload = JSON.stringify(body)
   res.writeHead(status, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) })
@@ -88,9 +113,16 @@ function loopbackRequest(req: IncomingMessage): boolean {
  * Assemble the card's status document. Sign-in state is read-only; credit is
  * a live billing answer whose failure degrades to `creditsError` rather than
  * failing the whole document.
+ *
+ * @param deps - route dependencies.
+ * @param creditsCache - optional process-local memo. When supplied, a billing
+ * answer younger than {@link CREDITS_CACHE_TTL_MS} is reused instead of calling
+ * the upstream again, and a fresh answer is stored back. Omitted by callers that
+ * need every read to be live (tests asserting one upstream call per request).
  */
 export async function workBuddyWebStatus(
   deps: WorkBuddyStatusRouteOptions,
+  creditsCache?: { entry?: WorkBuddyCreditsCacheEntry },
 ): Promise<WorkBuddyWebStatus> {
   const authStatus = await deps.store.status()
   if (authStatus.state !== 'signed-in') {
@@ -196,21 +228,39 @@ export async function workBuddyWebStatus(
   try {
     const credential = await deps.store.current()
     if (credential !== undefined) {
+      // A memo hit skips the upstream entirely. The check sits inside the
+      // signed-in branch on purpose: a signed-out document carries no credit
+      // token material at all, so there is nothing to reuse there.
+      const cached = creditsCache?.entry
+      if (cached !== undefined && Date.now() - cached.at < CREDITS_CACHE_TTL_MS) {
+        return { ...probed, credits: cached.credits }
+      }
       const credits = await deps.client.fetchCredits(credential)
+      if (creditsCache !== undefined) creditsCache.entry = { at: Date.now(), credits }
       // `unlimited` and `cycleResetTime` ride along as-is: the card must see
       // "no cap" as its own state, and the fetch only sets them when the
       // upstream actually reported them.
       return { ...probed, credits }
     }
   } catch (error: unknown) {
+    // A failed read deliberately leaves the memo untouched: the next poll must
+    // retry the upstream rather than serve a stale success over a live failure.
     return { ...probed, creditsError: safeMessage(error) }
   }
   return probed
 }
 
-/** The status route's request handler, extracted so tests can mount it on a bare server. */
+/**
+ * The status route's request handler, extracted so tests can mount it on a bare
+ * server.
+ *
+ * @param deps - route dependencies.
+ * @param creditsCache - memo shared by every request this handler serves; see
+ * {@link workBuddyWebStatus}.
+ */
 export function workBuddyStatusHandler(
   deps: WorkBuddyStatusRouteOptions,
+  creditsCache?: { entry?: WorkBuddyCreditsCacheEntry },
 ): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
   return async (req, res) => {
     if (req.method !== 'GET') {
@@ -222,7 +272,7 @@ export function workBuddyStatusHandler(
       return
     }
     try {
-      json(res, 200, await workBuddyWebStatus(deps))
+      json(res, 200, await workBuddyWebStatus(deps, creditsCache))
     } catch (error: unknown) {
       json(res, 500, { error: safeMessage(error) })
     }
@@ -233,10 +283,15 @@ export function workBuddyStatusHandler(
 export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatusRouteOptions): void {
   const path = deps.path ?? WORKBUDDY_STATUS_PATH
   ctx.effect(() => {
+    // One memo per mount: the card and the composer's credit line both poll
+    // this handler, and a shared window collapses their overlapping reads into
+    // one upstream billing call. Creating it here (not at module scope) is what
+    // ties its lifetime to the route, so a remount starts from a clean slate.
+    const creditsCache: { entry?: WorkBuddyCreditsCacheEntry } = {}
     const dispose = ctx.webServer.register({
       kind: 'exact',
       path,
-      handler: workBuddyStatusHandler(deps),
+      handler: workBuddyStatusHandler(deps, creditsCache),
     })
     return () => {
       dispose()
