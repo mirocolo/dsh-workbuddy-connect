@@ -132,6 +132,11 @@ export interface WorkBuddyWebCreditAccount {
   remain: number
   size: number
   unlimited?: true
+  /**
+   * When this package's credit lapses, epoch ms; absent when the upstream
+   * declared nothing usable (including a placeholder date far in the future).
+   */
+  expireAt?: number
 }
 
 /** Aggregated credit answer rendered by the plugin card. */
@@ -251,6 +256,24 @@ export type WorkBuddyWebStatus =
     domain?: string
     source?: 'desktop' | 'dsh'
     expiresAt?: number
+    /**
+     * Non-secret account identity, for the read-only account detail dialog.
+     *
+     * Safe to hand to the browser for the same reason the visibility section's
+     * account key is: this is the account's public identity, not a credential.
+     * Never a token, and the dialog is the only consumer.
+     */
+    uid?: string
+    /** Whether the credential belongs to an enterprise account. */
+    enterpriseAccount?: boolean
+    /**
+     * When the refresh token lapses, epoch ms.
+     *
+     * Shown beside the access token's expiry because the two mean different
+     * things to a user: the access token lapses constantly and is renewed
+     * silently, while this one lapsing is what actually forces a re-sign-in.
+     */
+    refreshExpiresAt?: number
     credits?: WorkBuddyWebCredits
     creditsError?: string
     /** Billing convenience facts for the models the plugin serves. */

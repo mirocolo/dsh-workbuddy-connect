@@ -107,6 +107,16 @@ export interface WorkBuddyCreditAccount {
   remain: number
   size: number
   unlimited?: true
+  /**
+   * When this package's credit lapses, epoch ms; absent when the upstream
+   * declared nothing usable.
+   *
+   * Read from `DeductionEndTime`/`ExpiredTime` with `CycleEndTime` as the
+   * fallback — see {@link resolvePackageExpiry} for why the two are not simply
+   * interchangeable. A value the upstream uses as a permanent placeholder is
+   * deliberately dropped rather than shown as a date decades away.
+   */
+  expireAt?: number
 }
 
 /** Aggregated credit answer for one credential. */
@@ -356,6 +366,87 @@ export function regionOf(domain: string): WorkBuddyRegion {
   const lowered = domain.trim().toLowerCase()
   if (lowered === 'workbuddy.ai' || lowered.endsWith('.workbuddy.ai')) return 'global'
   return 'cn'
+}
+
+/**
+ * Beyond this horizon an expiry is the upstream's placeholder, not a date.
+ *
+ * The upstream answers some packages with `DeductionEndTime` in 2049 while a
+ * real `CycleEndTime` sits at the end of the current month. Showing "2049" as an
+ * expiry would be worse than showing nothing, so a value this far out is dropped
+ * and the package renders as having no stated expiry.
+ */
+export const FAR_FUTURE_EXPIRY_DAYS = 730
+
+/**
+ * How much later a deduction end must be before it is read as a placeholder.
+ *
+ * A real deduction end can legitimately sit slightly past the cycle end, so the
+ * cycle end only wins once the gap is this large.
+ */
+export const EXPIRY_CYCLE_OVERRIDE_DAYS = 365
+
+/**
+ * Read one upstream timestamp as epoch ms.
+ *
+ * The field's unit is not guaranteed: the upstream spells some of these in
+ * seconds and others in milliseconds. The magnitude decides — anything below
+ * 1e10 is seconds, since 1e10 ms is 1970-04-26 and 1e10 s is year 2286, so no
+ * plausible timestamp is ambiguous. ISO-8601 and `YYYY-MM-DD HH:MM:SS` strings
+ * are accepted too.
+ *
+ * @param value - the raw field, of any shape the upstream might send.
+ * @returns epoch ms, or undefined when the value cannot be read as a time.
+ */
+function parseUpstreamTimestampMs(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+    return Math.round(value < 10_000_000_000 ? value * 1_000 : value)
+  }
+  if (typeof value !== 'string') return undefined
+  const text = value.trim()
+  if (text === '') return undefined
+  const numeric = Number(text)
+  if (Number.isFinite(numeric) && numeric > 0) {
+    return Math.round(numeric < 10_000_000_000 ? numeric * 1_000 : numeric)
+  }
+  const parsed = Date.parse(text.includes('T') ? text : text.replace(' ', 'T'))
+  return Number.isNaN(parsed) ? undefined : parsed
+}
+
+/** First present field among the upstream's spellings of one fact. */
+function firstUpstreamField(source: Record<string, unknown>, keys: readonly string[]): unknown {
+  for (const key of keys) {
+    const value = source[key]
+    if (value !== undefined && value !== null) return value
+  }
+  return undefined
+}
+
+/**
+ * When one billing package's credit lapses, as epoch ms.
+ *
+ * `DeductionEndTime`/`ExpiredTime` is the specific date; `CycleEndTime` is the
+ * end of the billing cycle and is the fallback. The two are not simply
+ * interchangeable: the upstream sometimes answers with a placeholder deduction
+ * end (2049) beside a real cycle end (this month), and in that shape the cycle
+ * end is the truthful answer. A real deduction end may legitimately sit a little
+ * past the cycle end, so the cycle only overrides it once the gap is large.
+ *
+ * @param source - one raw account row from the billing answer.
+ * @param nowMs - current time, injected so the horizon is testable.
+ * @returns epoch ms, or undefined when nothing usable was declared.
+ */
+export function resolvePackageExpiry(source: Record<string, unknown>, nowMs: number): number | undefined {
+  const deductionEnd = parseUpstreamTimestampMs(firstUpstreamField(source, [
+    'DeductionEndTime', 'deductionEndTime', 'ExpiredTime', 'expiredTime',
+  ]))
+  const cycleEnd = parseUpstreamTimestampMs(firstUpstreamField(source, ['CycleEndTime', 'cycleEndTime']))
+  const overrideMs = EXPIRY_CYCLE_OVERRIDE_DAYS * 24 * 3600 * 1000
+  const expireAt = deductionEnd !== undefined && cycleEnd !== undefined && deductionEnd - cycleEnd > overrideMs
+    ? cycleEnd
+    : deductionEnd ?? cycleEnd
+  if (expireAt === undefined) return undefined
+  return expireAt - nowMs <= FAR_FUTURE_EXPIRY_DAYS * 24 * 3600 * 1000 ? expireAt : undefined
 }
 
 function chatBase(credential: WorkBuddyCredential): string {
@@ -848,6 +939,7 @@ export class WorkBuddyUpstreamClient {
     const rawAccounts = Array.isArray(inner['Accounts']) ? inner['Accounts'] : []
     const accounts: WorkBuddyCreditAccount[] = []
     let total = 0
+    const nowMs = Date.now()
     for (const raw of rawAccounts) {
       if (typeof raw !== 'object' || raw === null) continue
       const account = raw as Record<string, unknown>
@@ -862,10 +954,12 @@ export class WorkBuddyUpstreamClient {
       else remain = capacityRemain
       if (remain < 0) remain = 0
       total += remain
+      const expireAt = resolvePackageExpiry(account, nowMs)
       accounts.push({
         packageName: typeof account['PackageName'] === 'string' ? account['PackageName'] : '(unnamed)',
         remain,
         size: size > 0 ? size : numberField('CapacitySize'),
+        ...expireAt === undefined ? {} : { expireAt },
       })
     }
     return { total, accounts }

@@ -15,7 +15,7 @@ importers:
         specifier: ~1.8.5
         version: 1.8.5
       '@deepseek-ai/dsh-api-session-controller':
-        specifier: 0.1.7-rc.2
+        specifier: ^0.1.7-rc.2
         version: 0.1.7-rc.2(73729a969fad47602135508d165d37f1)
       '@deepseek-ai/dsh-atomic-write':
         specifier: ^0.1.7-rc.2

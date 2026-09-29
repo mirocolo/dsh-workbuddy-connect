@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { WorkBuddyCredential } from '../src/auth.ts'
 import { FALLBACK_WORKBUDDY_MODELS } from '../src/catalog.ts'
-import { classifyUpstreamError, extractDisplayErrorMessage, normalizeCredits, parseModelCatalog, WorkBuddyUpstreamClient } from '../src/upstream.ts'
+import { classifyUpstreamError, extractDisplayErrorMessage, normalizeCredits, parseModelCatalog, resolvePackageExpiry, WorkBuddyUpstreamClient } from '../src/upstream.ts'
 
 /**
  * Offline unit tests for WorkBuddyUpstreamClient, mocking the global `fetch`
@@ -466,6 +466,92 @@ describe('WorkBuddyUpstreamClient.fetchCredits (CN enterprise)', () => {
     expect(url).toContain('get-user-resource')
     expect(url).not.toContain('get-enterprise-user-usage')
     expect(credits.total).toBe(40)
+  })
+})
+
+describe('resolvePackageExpiry', () => {
+  /**
+   * Package expiry, transcribed from the reference implementation in
+   * `workbuddy-switch` (`crates/wb-switch-core/src/modules/credits.rs`). The
+   * upstream's timestamp fields are inconsistent in unit and sometimes carry a
+   * placeholder, so these pin the reading rather than the plumbing.
+   */
+  const NOW = Date.UTC(2026, 8, 29, 12, 0, 0)
+  const DAY = 24 * 3600 * 1000
+
+  it('reads seconds and milliseconds to the same instant', () => {
+    const seconds = Math.floor((NOW + 7 * DAY) / 1000)
+    expect(resolvePackageExpiry({ DeductionEndTime: seconds }, NOW)).toBe(NOW + 7 * DAY)
+    expect(resolvePackageExpiry({ DeductionEndTime: NOW + 7 * DAY }, NOW)).toBe(NOW + 7 * DAY)
+  })
+
+  it('prefers the deduction end, falling back to the cycle end', () => {
+    expect(resolvePackageExpiry({ DeductionEndTime: NOW + 3 * DAY, CycleEndTime: NOW + 30 * DAY }, NOW))
+      .toBe(NOW + 3 * DAY)
+    expect(resolvePackageExpiry({ CycleEndTime: NOW + 30 * DAY }, NOW)).toBe(NOW + 30 * DAY)
+  })
+
+  it('takes the cycle end when the deduction end is a far-future placeholder', () => {
+    // The upstream's real shape: DeductionEndTime in 2049 beside a CycleEndTime
+    // at the end of the current month. Reporting 2049 would be worse than
+    // reporting the month end, which is when the credit actually lapses.
+    const expiry = resolvePackageExpiry({
+      DeductionEndTime: Date.UTC(2049, 0, 1),
+      CycleEndTime: Date.UTC(2026, 8, 30),
+    }, NOW)
+    expect(expiry).toBe(Date.UTC(2026, 8, 30))
+  })
+
+  it('keeps a deduction end that is only slightly past the cycle end', () => {
+    // A small overhang is legitimate, so the override must not fire on it.
+    expect(resolvePackageExpiry({ DeductionEndTime: NOW + 30 * DAY, CycleEndTime: NOW + 10 * DAY }, NOW))
+      .toBe(NOW + 30 * DAY)
+  })
+
+  it('accepts the alternate spellings and string forms', () => {
+    expect(resolvePackageExpiry({ ExpiredTime: '2026-10-06 23:59:59' }, NOW)).toBeDefined()
+    expect(resolvePackageExpiry({ expiredTime: NOW + 2 * DAY }, NOW)).toBe(NOW + 2 * DAY)
+    expect(resolvePackageExpiry({ cycleEndTime: NOW + 2 * DAY }, NOW)).toBe(NOW + 2 * DAY)
+  })
+
+  it('drops a date beyond the far-future horizon rather than showing it', () => {
+    // Nothing else to fall back to, so the package simply has no stated expiry.
+    expect(resolvePackageExpiry({ DeductionEndTime: Date.UTC(2049, 0, 1) }, NOW)).toBeUndefined()
+  })
+
+  it('returns undefined when nothing usable was declared', () => {
+    expect(resolvePackageExpiry({}, NOW)).toBeUndefined()
+    expect(resolvePackageExpiry({ DeductionEndTime: 0 }, NOW)).toBeUndefined()
+    expect(resolvePackageExpiry({ DeductionEndTime: 'not a date' }, NOW)).toBeUndefined()
+    expect(resolvePackageExpiry({ DeductionEndTime: null }, NOW)).toBeUndefined()
+  })
+
+  it('keeps an already-expired date, leaving the caller to judge it', () => {
+    // An expiry in the past is a real fact about the package, not bad input:
+    // the parse must not quietly turn it into "no expiry".
+    expect(resolvePackageExpiry({ DeductionEndTime: NOW - DAY }, NOW)).toBe(NOW - DAY)
+  })
+})
+
+describe('fetchCredits package expiry', () => {
+  it('carries a declared expiry onto the account row', async () => {
+    const expiry = Date.now() + 5 * 24 * 3600 * 1000
+    vi.stubGlobal('fetch', vi.fn(async () => fakeResponse(billingEnvelope([
+      { PackageName: 'pkg-a', CycleCapacitySize: 100, CycleCapacityRemain: 40, DeductionEndTime: expiry },
+    ]))))
+
+    const credits = await new WorkBuddyUpstreamClient().fetchCredits(CREDENTIAL)
+    expect(credits.accounts[0]?.expireAt).toBe(expiry)
+  })
+
+  it('omits the field entirely when the upstream declared no usable date', async () => {
+    // Absent, not zero or null: the panel keys "no expiry to show" on absence.
+    vi.stubGlobal('fetch', vi.fn(async () => fakeResponse(billingEnvelope([
+      { PackageName: 'pkg-a', CycleCapacitySize: 100, CycleCapacityRemain: 40 },
+    ]))))
+
+    const credits = await new WorkBuddyUpstreamClient().fetchCredits(CREDENTIAL)
+    expect(credits.accounts[0]).not.toHaveProperty('expireAt')
   })
 })
 

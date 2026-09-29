@@ -148,6 +148,16 @@ export async function workBuddyWebStatus(
     ...authStatus.domain === undefined || authStatus.domain === '' ? {} : { domain: authStatus.domain },
     ...authStatus.source === undefined ? {} : { source: authStatus.source },
     ...authStatus.expiresAtMs === undefined ? {} : { expiresAt: authStatus.expiresAtMs },
+    // Identity for the read-only account detail dialog. The `uid` rides the same
+    // non-secret footing as the visibility section's account key. Enterprise
+    // status is reported as a boolean rather than the raw `enterpriseId`: the
+    // dialog only needs to say "enterprise account", so the tenant id itself
+    // never has to cross to the browser.
+    ...authStatus.uid === undefined || authStatus.uid === '' ? {} : { uid: authStatus.uid },
+    ...authStatus.enterpriseId === undefined || authStatus.enterpriseId === ''
+      ? {}
+      : { enterpriseAccount: true },
+    ...authStatus.refreshExpiresAtMs === undefined ? {} : { refreshExpiresAt: authStatus.refreshExpiresAtMs },
   }
   // Model facts ride the signed-in document so the card can show rates,
   // promos, and context capacity without touching the Models picker. The rate

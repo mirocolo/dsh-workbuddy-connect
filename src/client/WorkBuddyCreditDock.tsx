@@ -67,6 +67,15 @@ const REFRESH_INTERVAL_MS = 60_000
  */
 const SETTLE_DELAY_MS = 2_000
 
+/**
+ * The dock's root.
+ *
+ * Deliberately NOT clipping. The details panel is positioned inside this
+ * element, so an `overflow: hidden` here would paint the panel into a clipped
+ * box and the click would look like it did nothing. The ellipsis that keeps the
+ * credit line to one row lives on {@link lineStyle} instead, which wraps only
+ * the text.
+ */
 const rootStyle: CSSProperties = {
   position: 'relative',
   display: 'block',
@@ -79,6 +88,11 @@ const rootStyle: CSSProperties = {
   fontSize: 'var(--dsh-content-font-size-secondary, 13px)',
   lineHeight: '18px',
   color: 'var(--dsw-alias-label-tertiary)',
+}
+
+/** The one-line credit text, ellipsized here rather than on the root. */
+const lineStyle: CSSProperties = {
+  display: 'block',
   whiteSpace: 'nowrap',
   overflow: 'hidden',
   textOverflow: 'ellipsis',
@@ -89,14 +103,23 @@ const triggerStyle: CSSProperties = {
   font: 'inherit',
   color: 'inherit',
 }
+/**
+ * The details panel, anchored just above the credit row.
+ *
+ * Absolute positioning inside the unclipped root: the panel is a sibling of the
+ * credit line, so it escapes the composer's own row bounds without needing a
+ * portal or a measured position.
+ */
 const panelStyle: CSSProperties = {
   position: 'absolute',
   bottom: 'calc(100% + 8px)',
   left: '50%',
   transform: 'translateX(-50%)',
-  zIndex: 100,
+  zIndex: 1000,
   boxSizing: 'border-box',
   width: 264,
+  maxHeight: 'min(70vh, 420px)',
+  overflowY: 'auto',
   padding: 12,
   border: '1px solid var(--dsw-alias-border-l2)',
   borderRadius: 12,
@@ -174,11 +197,82 @@ const linkStyle: CSSProperties = {
   fontSize: 12,
   color: 'var(--dsw-alias-brand-primary, #1677ff)',
 }
+const sectionTitleStyle: CSSProperties = {
+  margin: '10px 0 4px',
+  fontSize: 11,
+  fontWeight: 500,
+  letterSpacing: '0.02em',
+  color: 'var(--dsw-alias-label-tertiary)',
+  textTransform: 'uppercase',
+}
+const detailRowStyle: CSSProperties = {
+  display: 'flex',
+  justifyContent: 'space-between',
+  gap: 12,
+  fontSize: 12,
+  lineHeight: '20px',
+}
+const detailLabelStyle: CSSProperties = {
+  color: 'var(--dsw-alias-label-tertiary)',
+  flexShrink: 0,
+}
+const detailValueStyle: CSSProperties = {
+  color: 'var(--dsw-alias-label-secondary)',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+  fontVariantNumeric: 'tabular-nums',
+}
+const expiryLineStyle: CSSProperties = {
+  marginTop: 2,
+  fontSize: 11,
+  lineHeight: '16px',
+  color: 'var(--dsw-alias-label-tertiary)',
+  fontVariantNumeric: 'tabular-nums',
+}
+const separatorStyle: CSSProperties = {
+  margin: '10px 0 0',
+  border: 0,
+  borderTop: '1px solid var(--dsw-alias-border-l1, rgba(0, 0, 0, 0.06))',
+}
+
+/**
+ * Format an epoch-ms instant for the details surface.
+ *
+ * Locale-aware and timezone-stable: the value is shown to the minute, because
+ * an expiry stated to the second invites false precision about when credit
+ * actually stops being spendable.
+ */
+function formatLocalTime(epochMs: number, timeZone: string | undefined): string {
+  return new Date(epochMs).toLocaleString(undefined, {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    ...timeZone === undefined ? {} : { timeZone },
+  })
+}
+
+/** One label/value row in the account detail block. */
+function DetailRow({ label, value, title }: {
+  label: string
+  value: string
+  title?: string
+}): React.ReactNode {
+  return (
+    <div style={detailRowStyle}>
+      <span style={detailLabelStyle}>{label}</span>
+      <span style={detailValueStyle} {...title === undefined ? {} : { title }}>{value}</span>
+    </div>
+  )
+}
 
 /** Compact per-package progress row. */
-function PackageRow({ account, t }: {
+function PackageRow({ account, t, timeZone }: {
   account: WorkBuddyWebCredits['accounts'][number]
   t: WorkBuddyCreditDockProps['t']
+  timeZone: string | undefined
 }): React.ReactNode {
   // A package of unknown size gets no bar rather than a fabricated one.
   const percent = account.size > 0
@@ -207,6 +301,11 @@ function PackageRow({ account, t }: {
         >
           <div style={{ width: `${percent}%`, height: '100%', background: 'var(--dsw-alias-brand-primary, #1677ff)' }} />
         </div>
+      )}
+      {/* Only stated when the upstream declared a usable date: a package with no
+          real expiry must not imply one. */}
+      {account.expireAt === undefined ? null : (
+        <div style={expiryLineStyle}>{t('dockPackageExpiry', { time: formatLocalTime(account.expireAt, timeZone) })}</div>
       )}
     </div>
   )
@@ -315,7 +414,8 @@ function WorkBuddyCreditDockBody({ selection, useSession, t }: {
   useEffect(() => {
     if (!open) return
     const onPointerDown = (event: PointerEvent): void => {
-      if (event.target instanceof Node && rootRef.current?.contains(event.target) === true) return
+      if (!(event.target instanceof Node)) return
+      if (rootRef.current?.contains(event.target) === true) return
       setOpen(false)
     }
     const onKeyDown = (event: KeyboardEvent): void => {
@@ -335,6 +435,15 @@ function WorkBuddyCreditDockBody({ selection, useSession, t }: {
   if (line.segments.length === 0) return null
   const lineText = renderDockSegments(line.segments, t)
   const credits = line.credits
+  // The signed-in document, once one has arrived: the account detail block is
+  // read from here rather than from a second request.
+  const signedIn = load.phase === 'ok' && load.value.status === 'signed-in' ? load.value : undefined
+  // The host's own timezone, so an expiry reads in the user's clock rather than
+  // the browser's guess. Absent in the test environment, where `toLocaleString`
+  // falls back to the runtime default.
+  const timeZone = typeof Intl.DateTimeFormat === 'function'
+    ? Intl.DateTimeFormat().resolvedOptions().timeZone
+    : undefined
   // The panel only carries WorkBuddy billing detail, so it stays unreachable
   // (plain text, no dialog affordance) whenever there is none to show.
   if (credits === null) {
@@ -351,7 +460,7 @@ function WorkBuddyCreditDockBody({ selection, useSession, t }: {
         aria-label={t('dockPanelAria')}
         onClick={() => { setOpen(!open) }}
       >
-        {lineText}
+        <span style={lineStyle}>{lineText}</span>
       </button>
       {open
         ? (
@@ -374,7 +483,12 @@ function WorkBuddyCreditDockBody({ selection, useSession, t }: {
                 ? (
                     <div style={rowStyle}>
                       {credits.rows.map((account, index) => (
-                        <PackageRow key={`${account.packageName}-${String(index)}`} account={account} t={t} />
+                        <PackageRow
+                          key={`${account.packageName}-${String(index)}`}
+                          account={account}
+                          t={t}
+                          timeZone={timeZone}
+                        />
                       ))}
                     </div>
                   )
@@ -382,6 +496,44 @@ function WorkBuddyCreditDockBody({ selection, useSession, t }: {
               {load.phase === 'ok' && load.value.status === 'signed-in' && load.value.creditsError !== undefined
                 ? <p style={errorStyle}>{t('creditsError', { message: load.value.creditsError })}</p>
                 : null}
+              {/* Read-only account detail. This seat has no way to sign in, sign
+                  out, or switch accounts — the plugin follows the desktop app's
+                  own sign-in — so the block only reports, and every write path
+                  stays where it already lives (the settings card). */}
+              {signedIn === undefined ? null : (
+                <>
+                  <hr style={separatorStyle} />
+                  <div style={sectionTitleStyle}>{t('dockAccountHeading')}</div>
+                  {signedIn.nickname === undefined ? null : (
+                    <DetailRow label={t('dockAccountNickname')} value={signedIn.nickname} />
+                  )}
+                  {signedIn.uid === undefined ? null : (
+                    <DetailRow label={t('dockAccountUid')} value={signedIn.uid} title={signedIn.uid} />
+                  )}
+                  {signedIn.enterpriseAccount === true ? (
+                    <DetailRow label={t('dockAccountType')} value={t('dockAccountTypeEnterprise')} />
+                  ) : null}
+                  {signedIn.domain === undefined ? null : (
+                    <DetailRow label={t('dockAccountDomain')} value={signedIn.domain} title={signedIn.domain} />
+                  )}
+                  {signedIn.expiresAt === undefined ? null : (
+                    <DetailRow
+                      label={t('dockAccountAccessExpiry')}
+                      value={formatLocalTime(signedIn.expiresAt, timeZone)}
+                    />
+                  )}
+                  {signedIn.refreshExpiresAt === undefined ? null : (
+                    <DetailRow
+                      label={t('dockAccountRefreshExpiry')}
+                      value={formatLocalTime(signedIn.refreshExpiresAt, timeZone)}
+                    />
+                  )}
+                  <DetailRow
+                    label={t('dockAccountSource')}
+                    value={signedIn.source === 'dsh' ? t('dockAccountSourceDsh') : t('dockAccountSourceDesktop')}
+                  />
+                </>
+              )}
               <div style={footerStyle}>
                 <button
                   type="button"

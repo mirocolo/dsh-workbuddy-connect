@@ -120,6 +120,7 @@ export {
   prepareChatBody,
   prepareInternationalChatBody,
   regionOf,
+  resolvePackageExpiry,
   WorkBuddyUpstreamClient,
   type UpstreamErrorKind,
   type WorkBuddyCatalogFetch,

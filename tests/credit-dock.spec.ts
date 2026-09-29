@@ -160,3 +160,159 @@ describe('Composer credit dock', () => {
     expect(text(renderer)).toContain('Credit unavailable')
   })
 })
+
+describe('Composer credit dock account detail', () => {
+  let view: ReactTestRenderer | undefined
+  let projection: WorkBuddyModelSelectionProjection
+  let statusBody: Record<string, unknown>
+  const request = vi.fn()
+
+  const useProjection: WorkBuddyCreditDockProps['useProjection'] = ((key: string) =>
+    key === 'modelSelection' ? projection : undefined) as WorkBuddyCreditDockProps['useProjection']
+  const useSession = ((selector: (snapshot: { running: boolean }) => unknown) =>
+    selector({ running: false })) as unknown as WorkBuddyCreditDockProps['useSession']
+
+  function status(overrides: Record<string, unknown> = {}): void {
+    statusBody = {
+      status: 'signed-in',
+      nickname: '昵称',
+      uid: 'uid-12345',
+      domain: 'www.workbuddy.cn',
+      source: 'desktop',
+      expiresAt: Date.UTC(2026, 8, 29, 15, 30),
+      refreshExpiresAt: Date.UTC(2026, 9, 20, 8, 0),
+      credits: { total: 100, accounts: [{ packageName: '包', remain: 100, size: 200 }] },
+      ...overrides,
+    }
+  }
+
+  /** Mount and then click the credit row open. */
+  async function mountOpen(): Promise<ReactTestRenderer> {
+    let renderer: ReactTestRenderer | undefined
+    await act(async () => {
+      renderer = create(createElement(WorkBuddyCreditDock, { useProjection, useSession, t }))
+    })
+    view = renderer
+    const trigger = (renderer as ReactTestRenderer).root.findAllByType('button')[0]
+    await act(async () => { trigger?.props.onClick() })
+    return renderer as ReactTestRenderer
+  }
+
+  function text(renderer: ReactTestRenderer): string {
+    return JSON.stringify(renderer.toJSON())
+  }
+
+  beforeEach(() => {
+    projection = { next: { provider: 'workbuddy', model: 'glm-5.3' }, lastUsed: null }
+    status()
+    request.mockReset().mockImplementation(async () => ({ ok: true, json: async () => statusBody }))
+    vi.stubGlobal('fetch', request)
+    vi.stubGlobal('window', {
+      setInterval: () => 1,
+      clearInterval: () => {},
+      clearTimeout: () => {},
+      setTimeout: () => 1,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    })
+    vi.stubGlobal('document', { addEventListener: () => {}, removeEventListener: () => {} })
+  })
+
+  afterEach(() => {
+    act(() => { view?.unmount() })
+    view = undefined
+    vi.unstubAllGlobals()
+  })
+
+  it('reports the signed-in account details', async () => {
+    const rendered = text(await mountOpen())
+    expect(rendered).toContain('昵称')
+    expect(rendered).toContain('uid-12345')
+    expect(rendered).toContain('www.workbuddy.cn')
+    expect(rendered).toContain('Account')
+  })
+
+  it('distinguishes the refresh expiry from the access token expiry', async () => {
+    // The two mean different things: the access token lapses constantly and is
+    // renewed silently, while the refresh expiry is what forces a re-sign-in.
+    const rendered = text(await mountOpen())
+    expect(rendered).toContain('Access token expires')
+    expect(rendered).toContain('Re-sign-in required after')
+  })
+
+  it('offers no way to change the account from this seat', async () => {
+    // The plugin follows the desktop app's sign-in, so this surface is read-only
+    // by design: the only affordances are the row itself and the refresh link.
+    // Anything that writes (switch, sign out, add) belongs to the settings card.
+    const renderer = await mountOpen()
+    const buttons = renderer.root.findAllByType('button')
+    // Two buttons: the credit row that opens the panel, and the refresh link.
+    // Anything that writes (switch, sign out, add) belongs to the settings card.
+    expect(buttons).toHaveLength(2)
+    // The second is the refresh link, and the row itself is the only other
+    // affordance — asserted by its aria-label rather than by reading children,
+    // which reaches into the nested span the label lives in.
+    expect(buttons[0]?.props['aria-haspopup']).toBe('dialog')
+    expect(String(buttons[1]?.props.children)).toBe('Refresh')
+    const rendered = text(renderer)
+    expect(rendered).not.toContain('Switch')
+    expect(rendered).not.toContain('Sign out')
+    expect(rendered).not.toContain('Delete')
+  })
+
+  it('omits identity rows the document does not carry', async () => {
+    status({ uid: undefined, refreshExpiresAt: undefined, nickname: undefined })
+    const rendered = text(await mountOpen())
+    expect(rendered).not.toContain('UID')
+    expect(rendered).not.toContain('Re-sign-in required after')
+    // The credit rows still render: a document missing identity is not a
+    // document missing billing.
+    expect(rendered).toContain('Credit')
+  })
+
+  it('marks an enterprise account without exposing the tenant id', async () => {
+    status({ enterpriseAccount: true })
+    const rendered = text(await mountOpen())
+    expect(rendered).toContain('Enterprise')
+  })
+
+  it('states a package expiry when the upstream declared one', async () => {
+    status({
+      credits: {
+        total: 100,
+        accounts: [{ packageName: '包', remain: 100, size: 200, expireAt: Date.UTC(2026, 9, 6, 23, 59) }],
+      },
+    })
+    const rendered = text(await mountOpen())
+    expect(rendered).toContain('Expires')
+  })
+
+  it('states no expiry for a package the upstream left undated', async () => {
+    // Absence must read as "nothing declared", never as a fabricated date.
+    const rendered = text(await mountOpen())
+    expect(rendered).not.toContain('Expires')
+  })
+
+  it('anchors the panel in a container that does not clip it', async () => {
+    /*
+     * The regression this pins: the root used to carry `overflow: hidden` so the
+     * credit line would ellipsize to one row. The details panel is positioned
+     * inside that root, so it was painted into the clipped box and the click
+     * looked like it did nothing at all. The clipping now lives on the inner
+     * text span; the root must stay unclipped or the panel becomes invisible
+     * again.
+     */
+    const renderer = await mountOpen()
+    const root = renderer.root.findAll(node => node.type === 'div')[0]
+    expect(root?.props.style.overflow).toBeUndefined()
+
+    // The clipping still applies to the one-line text, so the row stays one row.
+    const line = renderer.root.findAllByType('span')[0]
+    expect(line?.props.style.overflow).toBe('hidden')
+    expect(line?.props.style.textOverflow).toBe('ellipsis')
+
+    // And the panel is a descendant of that unclipped root, not a sibling tree.
+    const panel = renderer.root.findAll(node => node.props.role === 'dialog')[0]
+    expect(panel).toBeDefined()
+  })
+})

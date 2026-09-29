@@ -51,6 +51,15 @@ export interface WorkBuddyAuthStatus {
   domain?: string
   source?: 'desktop' | 'dsh'
   /**
+   * The account's public identity, for surfaces that name the signed-in account.
+   *
+   * Not a secret: this is the same `uid` the visibility preferences are keyed
+   * by, and it never travels with a token.
+   */
+  uid?: string
+  /** Present when the credential names an enterprise tenant. */
+  enterpriseId?: string
+  /**
    * Why no credential is usable, when the reason is diagnosable rather than
    * "nobody is signed in" — a region mismatch being the case that matters.
    * Present only on `signed-out`, and never a substitute for fixing the file.
@@ -441,6 +450,10 @@ export class WorkBuddyCredentialStore {
         ...credential.nickname === undefined ? {} : { nickname: credential.nickname },
         ...credential.domain === '' ? {} : { domain: credential.domain },
         source: credential.source,
+        ...credential.uid === '' ? {} : { uid: credential.uid },
+        ...credential.enterpriseId === undefined || credential.enterpriseId === ''
+          ? {}
+          : { enterpriseId: credential.enterpriseId },
       }
     } catch (error: unknown) {
       // A region mismatch (or an unreadable file, or an unusable key helper) is
