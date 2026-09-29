@@ -42,7 +42,7 @@ interface Harness {
 }
 
 /** Which slot registrations exist as declarations (callback fires at inject). */
-const ALL_SLOTS = ['settings.plugin.item', 'plugins.bundle.config', 'conversation.input.right', 'shell.overlay']
+const ALL_SLOTS = ['settings.plugin.item', 'plugins.bundle.config', 'conversation.input.right', 'shell.overlay', 'conversation.composer.dock']
 
 /**
  * Build the fake host context. `failInject` throws from a `ctx.slots.inject`
@@ -112,6 +112,7 @@ const ALL_REGISTRATIONS: RecordedRegistration[] = [
   { name: 'settings.plugin.item', key: 'workbuddy-ai' },
   { name: 'plugins.bundle.config', key: BUNDLE_NAME },
   { name: 'conversation.input.right', id: 'workbuddy-probe' },
+  { name: 'conversation.composer.dock', id: 'workbuddy-credits' },
 ]
 
 afterEach(() => {
@@ -125,6 +126,7 @@ describe('client contribution isolation', () => {
     expect(h.registered).toEqual(ALL_REGISTRATIONS)
     expect(h.injectedSlots).toEqual([
       'shell.overlay', 'settings.plugin.item', 'settings.plugin.item', 'plugins.bundle.config', 'conversation.input.right',
+      'conversation.composer.dock',
     ])
     expect(h.enteredModelDirectories()).toBe(true)
     expect(h.errors).toHaveLength(0)
@@ -143,6 +145,7 @@ describe('client contribution isolation', () => {
       { name: 'settings.plugin.item', key: 'workbuddy-ai' },
       { name: 'plugins.bundle.config', key: BUNDLE_NAME },
       { name: 'conversation.input.right', id: 'workbuddy-probe' },
+      { name: 'conversation.composer.dock', id: 'workbuddy-credits' },
     ])
     expect(h.errors).toHaveLength(1)
     expect(String(h.errors[0])).toContain('settings.plugin.item card "workbuddy"')
@@ -159,6 +162,7 @@ describe('client contribution isolation', () => {
       { name: 'settings.plugin.item', key: 'workbuddy' },
       { name: 'settings.plugin.item', key: 'workbuddy-ai' },
       { name: 'conversation.input.right', id: 'workbuddy-probe' },
+      { name: 'conversation.composer.dock', id: 'workbuddy-credits' },
     ])
     expect(h.errors).toHaveLength(1)
     expect(String(h.errors[0])).toContain('plugins.bundle.config page')
@@ -171,7 +175,11 @@ describe('client contribution isolation', () => {
       ? 'slot conversation.input.right is not declared'
       : undefined })
     expect(() => apply(h.ctx)).not.toThrow()
-    expect(h.registered).toEqual(ALL_REGISTRATIONS.slice(0, 4))
+    // Every other contribution lands, the dock included: it is not inside the
+    // modelDirectories scope the probe seat needs, so it is unaffected.
+    expect(h.registered).toEqual(
+      ALL_REGISTRATIONS.filter(entry => entry.name !== 'conversation.input.right'),
+    )
     expect(h.enteredModelDirectories()).toBe(true)
     expect(h.errors).toHaveLength(1)
     expect(String(h.errors[0])).toContain('conversation probe control')
@@ -187,13 +195,13 @@ describe('client contribution isolation', () => {
 
   it('degrades every contribution independently under a total slot-API breakage', () => {
     // The rc.6→rc.7-style API break: every slots.inject throws. Each of the
-    // four contributions logs its own degradation, none rethrows into the
+    // six contributions logs its own degradation, none rethrows into the
     // loader, and the locale copy still lands.
     const h = harness({ failInject: () => 'slots.inject is not a function' })
     expect(() => apply(h.ctx)).not.toThrow()
     expect(h.registered).toEqual([])
     expect(h.injectedSlots).toEqual([])
     expect(h.enteredModelDirectories()).toBe(true)
-    expect(h.errors).toHaveLength(5)
+    expect(h.errors).toHaveLength(6)
   })
 })

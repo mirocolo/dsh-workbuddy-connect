@@ -64,6 +64,7 @@
         "@deepseek-ai/dsh-client-ui-renderer",
         "@deepseek-ai/dsh-client-ui-conversation",
         "@deepseek-ai/dsh-client-ui-model-selection",
+        "@deepseek-ai/dsh-client-ui-session",
         "@deepseek-ai/dsh-client-locale"
       ],
       "platform": "web"
@@ -85,6 +86,7 @@
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.2",
     "@deepseek-ai/cosmokit": "~1.8.5",
+    "@deepseek-ai/dsh-api-session-controller": "^0.1.7-rc.2",
     "@deepseek-ai/dsh-atomic-write": "^0.1.7-rc.2",
     "@deepseek-ai/dsh-attachment": "^0.1.7-rc.2",
     "@deepseek-ai/dsh-client-locale": "^0.1.7-rc.2",
@@ -92,6 +94,7 @@
     "@deepseek-ai/dsh-client-ui-model-selection": "^0.1.7-rc.2",
     "@deepseek-ai/dsh-client-ui-plugin-manager": "^0.1.7-rc.2",
     "@deepseek-ai/dsh-client-ui-renderer": "^0.1.7-rc.2",
+    "@deepseek-ai/dsh-client-ui-session": "^0.1.7-rc.2",
     "@deepseek-ai/dsh-client-ui-settings-plugins": "^0.1.7-rc.2",
     "@deepseek-ai/dsh-client-ui-slots": "^0.1.7-rc.2",
     "@deepseek-ai/dsh-credentials": "^0.1.7-rc.2",

@@ -26,7 +26,13 @@ import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {} from '@deepseek-ai/dsh-client-ui-model-selection/client'
+// Type-only: installs the session standard props merge (`useProjection`,
+// `useSession`, `sessionId`) that the composer credit dock reads. Without this
+// import the merge is not in the type graph and the dock's props fail to check.
+import type {} from '@deepseek-ai/dsh-client-ui-session/client'
 import { WorkBuddyProbeControl } from './WorkBuddyProbeControl.tsx'
+import { WorkBuddyCreditDock } from './WorkBuddyCreditDock.tsx'
+import type { WorkBuddyCreditDockProps } from './WorkBuddyCreditDock.tsx'
 import { WorkBuddyUpdateOverlay } from './WorkBuddyUpdateNotice.tsx'
 import { WorkBuddyUpdateStore } from './update-store.ts'
 import { WORKBUDDY_CONNECT_VERSION } from '../version.ts'
@@ -249,5 +255,25 @@ export function apply(ctx: ClientContext): void {
         ))
       })
     })
+  })
+  // The composer credit line. It rides the same locale namespace (its keys are
+  // a subset) and the session-scoped `conversation.composer.dock` list slot —
+  // the seat the host's own token meter occupies, so the credit figure sits
+  // directly under the input box. Unlike the probe control this needs no
+  // `modelDirectories`: the slot declares no owner props, and the selection and
+  // running state arrive through the session standard props merge that the
+  // type-only `dsh-client-ui-session` import above installs (`useProjection`,
+  // `useSession`). A dock registration failure must not take the settings cards
+  // down, so it carries its own guard like every other contribution.
+  guardClientContribution('composer credit dock', () => {
+    ctx.slots.inject('conversation.composer.dock', () => (
+      guardClientContribution('composer credit dock', () => ctx.slots.register({
+        name: 'conversation.composer.dock',
+        id: 'workbuddy-credits',
+        order: 20,
+        locale: namespace,
+        inject: (): Partial<WorkBuddyCreditDockProps> => ({ t }),
+      }, WorkBuddyCreditDock)) ?? NOOP_DISPOSER
+    ))
   })
 }
