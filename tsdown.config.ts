@@ -1,15 +1,24 @@
 import { readFileSync } from 'node:fs'
 import type { UserConfig } from 'tsdown'
 
-const PLUGIN_ID = 'dsh-workbuddy-connect'
-
-/** Read the npm version once so the build injects it into src/version.ts. */
-const PACKAGE_VERSION = JSON.parse(
+/** The package manifest, read once: both the bundle id and the version come from it. */
+const PACKAGE = JSON.parse(
   readFileSync(new URL('./package.json', import.meta.url), 'utf8'),
-).version as string
+) as { name: string, version: string }
+
+/**
+ * The id the browser bundle registers itself under.
+ *
+ * Taken from `package.json` rather than written as a literal: the host's module
+ * loader matches this id against the package name it resolved, so a rename that
+ * misses this one place produces a *silent* client-side failure —
+ * `__ModuleLoader__.load` completes, but the host rejects it with
+ * "loaded without registering <name>" because the two ids disagree.
+ */
+const PLUGIN_ID = PACKAGE.name
 
 /** Build-time define map; `src/version.ts` reads `__DSH_WORKBUDDY_VERSION__`. */
-const VERSION_DEFINE = { __DSH_WORKBUDDY_VERSION__: JSON.stringify(PACKAGE_VERSION) }
+const VERSION_DEFINE = { __DSH_WORKBUDDY_VERSION__: JSON.stringify(PACKAGE.version) }
 
 /**
  * Modules the host loader provides, kept out of the browser bundle. The
