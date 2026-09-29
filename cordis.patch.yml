@@ -1,6 +1,11 @@
 # Register the WorkBuddy provider without changing the profile's current
 # default model. The plugin reuses the WorkBuddy desktop app's sign-in; no
 # separate OAuth flow is started.
+#
+# `name` is the module specifier the Loader imports, so it must equal the
+# published package name exactly — a mismatch surfaces only as the opaque
+# "failed to import" (the real ERR_MODULE_NOT_FOUND is swallowed into the host
+# log), which is why this is easy to miss when the package is renamed.
 - insert:
     - id: llm-workbuddy
-      name: dsh-workbuddy-connect
+      name: '@mirocolo/dsh-workbuddy-connect'

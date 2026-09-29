@@ -70,9 +70,12 @@ export const name = 'dsh-workbuddy-connect-client'
  * The bundle's package name, which is also this half's configuration key.
  *
  * The Plugins page dispatches `plugins.bundle.config` by the bundle's package
- * name, so the key has to spell exactly what the profile installs.
+ * name — the host's own slot contract says so verbatim — so the key has to
+ * spell exactly what the profile installs. A mismatch does not raise: the
+ * entry simply never renders, which makes this easy to miss when the package
+ * is renamed.
  */
-export const BUNDLE_NAME = 'dsh-workbuddy-connect'
+export const BUNDLE_NAME = '@mirocolo/dsh-workbuddy-connect'
 
 /**
  * Client services required by this browser half.
