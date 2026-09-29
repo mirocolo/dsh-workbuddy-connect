@@ -5,3 +5,33 @@ coverage/
 AGENTS.md
 .mimosa/
 .zcode/
+
+# pnpm's content-addressable store. pnpm places it under the project directory
+# when one is run from there, which leaves thousands of untracked files behind
+# (and duplicates what the global store already holds). Ignoring it is the
+# convention pnpm's own tooling follows; `store-dir` in .npmrc is the
+# alternative if the store should live outside the repo entirely.
+.pnpm-store/
+
+# Build and test output. Note that `lib/` is deliberately NOT listed here or
+# anywhere below: it is the published artifact, committed on purpose so that
+# `dsh plugin add` installs a prebuilt package. tsdown cleans the directory
+# itself (`clean: true`), so stale chunks never accumulate.
+dist/
+*.tsbuildinfo
+
+# Packed tarballs from `npm pack`, and npm's debug logs.
+*.tgz
+npm-debug.log*
+
+# Local environment files. Nothing in this repo reads a `.env`, but a stray one
+# holding a token must never be committed.
+.env
+.env.*
+!.env.example
+
+# Editor and OS cruft. Neither .vscode/ nor .idea/ is shared by this project.
+.vscode/
+.idea/
+*.swp
+Thumbs.db

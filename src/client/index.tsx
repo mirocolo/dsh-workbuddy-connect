@@ -189,11 +189,21 @@ export function apply(ctx: ClientContext): void {
   // key-dispatched (two keys, one component), and on 0.1.6+ hosts nothing
   // declares it, so these registrations simply never run there. Each variant
   // is its own contribution: one card's failure cannot hide the other's.
+  //
+  // DSH 0.1.7 dropped `settings.plugin.item` from the slot-name union this
+  // package compiles against, so the seam is reached through a structural
+  // view: the call is unchanged, the name is merely no longer in the typed
+  // catalog. That matches its lifetime — it exists only for 0.1.5 hosts, and
+  // the surrounding guard already absorbs a host that does not declare it.
+  const legacySlots = ctx.slots as unknown as {
+    inject(name: string, fn: () => unknown): void
+    register(options: Record<string, unknown>, component: unknown): unknown
+  }
   for (const [index, variant] of CARD_VARIANTS.entries()) {
     const label = `settings.plugin.item card "${variant.id}"`
     guardClientContribution(label, () => {
-      ctx.slots.inject('settings.plugin.item', () => (
-        guardClientContribution(label, () => ctx.slots.register({
+      legacySlots.inject('settings.plugin.item', () => (
+        guardClientContribution(label, () => legacySlots.register({
           name: 'settings.plugin.item',
           key: variant.id,
           priority: 30 - index,

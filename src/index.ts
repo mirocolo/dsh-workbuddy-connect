@@ -178,6 +178,17 @@ export const WORKBUDDY_SETTINGS_NS = 'workbuddy' as SettingsNamespace
 export const WORKBUDDY_AI_SETTINGS_NS = 'workbuddy-ai' as SettingsNamespace
 
 /**
+ * The Loader entry id this bundle's insert patch declares.
+ *
+ * Must match `id:` in `cordis.patch.yml`. On DSH 0.1.7+ `SettingsForms` keys
+ * each generated form by its owning entry's id, so this is the handle
+ * `settings.update` takes; a mismatch would write to an unknown form and
+ * throw. Kept next to the namespaces because all three name the same plugin
+ * on their respective host generations.
+ */
+export const WORKBUDDY_ENTRY_ID = 'llm-workbuddy'
+
+/**
  * How often the credential files are re-checked, in milliseconds.
  *
  * A startup-only catalog fetch cannot notice a sign-in that happens while DSH
@@ -236,22 +247,84 @@ export interface Config {
   useMaximumContextWindow?: boolean
 }
 
-/** Explicit CN desktop auth-file path (shared by the plugin schema and its section). */
-const AUTH_FILE_FIELD = z.string().description('WorkBuddy desktop auth file (defaults to the app\'s own location)')
+/**
+ * The four user-editable fields, each marked `.volatile()`.
+ *
+ * DSH 0.1.7 replaced the provider-service section API (`installSection`) with
+ * `SettingsForms`, which derives a form automatically from the plugin's
+ * exported `Config` — but only over fields whose schema carries the
+ * `volatile` meta flag (`volatileForm()` in `@deepseek-ai/dsh-settings`).
+ * Marking them here is therefore what keeps these four preferences visible
+ * and writable on 0.1.7; on 0.1.5/0.1.6 the flag is inert for the legacy
+ * `installSection` path, which reads the same field schemas. Parsing a
+ * volatile field yields a stable reference read through `.get()`, so every
+ * read of `config` in this module goes through {@link readConfig} /
+ * the resolved `current()` snapshot rather than touching `.get()` inline.
+ */
+const AUTH_FILE_FIELD = z.string().description('WorkBuddy desktop auth file (defaults to the app\'s own location)').volatile()
 /** Explicit international desktop auth-file path (shared by the plugin schema and its section). */
-const AUTH_FILE_AI_FIELD = z.string().description('WorkBuddy AI desktop auth file (defaults to the app\'s own location)')
+const AUTH_FILE_AI_FIELD = z.string().description('WorkBuddy AI desktop auth file (defaults to the app\'s own location)').volatile()
 /** Probe authorization (shared by the plugin schema and the CN section). */
-const PROBE_CONSENT_FIELD = z.boolean().default(false)
+const PROBE_CONSENT_FIELD = z.boolean().volatile().default(false)
   .description('Authorize reasoning-effort probes (each probe sends real requests that may consume credit)')
-const MAXIMUM_CONTEXT_WINDOW_FIELD = z.boolean().default(true)
+const MAXIMUM_CONTEXT_WINDOW_FIELD = z.boolean().volatile().default(true)
   .description('Use the largest context window declared by WorkBuddy AI when alternatives are available (on by default)')
 
-export const Config: z<Config> = z.object({
-  authFile: AUTH_FILE_FIELD,
-  authFileAI: AUTH_FILE_AI_FIELD,
-  probeConsent: PROBE_CONSENT_FIELD,
-  useMaximumContextWindow: MAXIMUM_CONTEXT_WINDOW_FIELD,
-})
+/**
+ * The parsed shape of {@link Config} once schemastery has resolved it.
+ *
+ * Distinct from {@link Config} itself: a `.volatile()` field parses into a
+ * `Volatile<T>` reference read with `.get()`, so the schema's output type is
+ * not the plain resolved shape the rest of this module passes around. Naming
+ * it here keeps the two apart and is why every reader goes through
+ * {@link readConfig}.
+ *
+ * A `.volatile()` field parses to `Volatile<T>`, so the object literal's
+ * inferred type carries `volatile` / `volatile-defined` mode parameters that
+ * a plain `z<Config>` annotation cannot express (its mode defaults to
+ * `plain`). Pinning the annotation to the literal's own inferred type keeps
+ * the section schemas below assignable without weakening them to `unknown`.
+ */
+export type ConfigSchema = ReturnType<typeof makeConfigSchema>
+
+/** Build the canonical plugin schema; its inferred type is {@link ConfigSchema}. */
+function makeConfigSchema() {
+  return z.object({
+    authFile: AUTH_FILE_FIELD,
+    authFileAI: AUTH_FILE_AI_FIELD,
+    probeConsent: PROBE_CONSENT_FIELD,
+    useMaximumContextWindow: MAXIMUM_CONTEXT_WINDOW_FIELD,
+  })
+}
+
+export const Config: ConfigSchema = makeConfigSchema()
+
+/**
+ * Unwrap one parsed config field.
+ *
+ * A `.volatile()` field parses into a stable reference read with `.get()`,
+ * while the legacy section path hands back plain values — and a field the
+ * user never set may be either. This accepts both shapes, so every reader in
+ * this module stays unaware of which host produced its config.
+ */
+function readConfigValue<T>(value: T | { get(): T } | undefined): T | undefined {
+  if (value === undefined || value === null) return undefined
+  if (typeof value === 'object' && typeof (value as { get?: unknown }).get === 'function') {
+    return (value as { get(): T }).get()
+  }
+  return value as T
+}
+
+/** Read the whole config through {@link readConfigValue}, dropping absent fields. */
+function readConfig(config: Config): Config {
+  const raw = config as unknown as Record<string, unknown>
+  const out: Record<string, unknown> = {}
+  for (const key of ['authFile', 'authFileAI', 'probeConsent', 'useMaximumContextWindow']) {
+    const value = readConfigValue(raw[key])
+    if (value !== undefined) out[key] = value
+  }
+  return out as Config
+}
 
 /**
  * The CN side's settings section: only the fields that side edits.
@@ -261,17 +334,63 @@ export const Config: z<Config> = z.object({
  * `probeConsent` lives here because it predates the second variant; it gates no
  * current code path (only manual, per-click-confirmed probes run), so it is left
  * where existing users set it rather than moved and re-asked.
+ *
+ * Typed from its own literal (not from {@link ConfigSchema}) because a section
+ * is a strict subset of the plugin's fields — the legacy `installSection` takes
+ * exactly the fields that side owns.
  */
-const CN_SECTION: z<Config> = z.object({
-  authFile: AUTH_FILE_FIELD,
-  probeConsent: PROBE_CONSENT_FIELD,
-})
+function makeCnSectionSchema() {
+  return z.object({
+    authFile: AUTH_FILE_FIELD,
+    probeConsent: PROBE_CONSENT_FIELD,
+  })
+}
+
+const CN_SECTION: ReturnType<typeof makeCnSectionSchema> = makeCnSectionSchema()
 
 /** The international card's settings section and its context-window preference. */
-const AI_SECTION: z<Config> = z.object({
-  authFileAI: AUTH_FILE_AI_FIELD,
-  useMaximumContextWindow: MAXIMUM_CONTEXT_WINDOW_FIELD,
-})
+function makeAiSectionSchema() {
+  return z.object({
+    authFileAI: AUTH_FILE_AI_FIELD,
+    useMaximumContextWindow: MAXIMUM_CONTEXT_WINDOW_FIELD,
+  })
+}
+
+const AI_SECTION: ReturnType<typeof makeAiSectionSchema> = makeAiSectionSchema()
+
+/**
+ * The per-section hooks the legacy (pre-0.1.7) `installSection` API accepts.
+ *
+ * Declared structurally rather than imported: DSH 0.1.7 deleted both the
+ * method and its `SettingsSectionHooks` type, so building against 0.1.7 means
+ * these names no longer exist to import. The shape below is the 0.1.6
+ * contract this plugin actually uses, and the runtime feature-detect guards
+ * every call.
+ */
+interface LegacySectionHooks<T> {
+  setSource(source: () => T): void
+  onChange(): void
+}
+
+/** The removed 0.1.6 section-registration method, as this plugin calls it. */
+type LegacyInstallSection = (
+  owner: Context,
+  ns: SettingsNamespace,
+  schema: unknown,
+  entry: unknown,
+  hooks: LegacySectionHooks<Config>,
+) => void
+
+/**
+ * Reach the legacy section API through a structural view of the service.
+ *
+ * Needed because the method is absent from the 0.1.7 types this package
+ * compiles against while still being present at runtime on 0.1.6 hosts.
+ */
+function legacyInstallSectionOf(settings: object): LegacyInstallSection | undefined {
+  const candidate = (settings as { installSection?: unknown }).installSection
+  return typeof candidate === 'function' ? (candidate as LegacyInstallSection) : undefined
+}
 
 /** One variant's live runtime, assembled by {@link createVariantRuntime}. */
 interface VariantRuntime {
@@ -611,7 +730,14 @@ export function apply(ctx: Context, config: Config): void {
   // Live configuration source: starts as the applied config and is replaced by
   // the settings section's source once one is installed, so edits reach the
   // probe consent gate without a restart.
-  let current = (): Config => config
+  /**
+   * The resolved single-variant config every reader in this module goes
+   * through. Replaced wholesale by the settings wiring once a settings
+   * service exists (see the `settings` inject), which is what lets both host
+   * generations — legacy sections and volatile forms — present the same shape
+   * to the rest of the plugin.
+   */
+  let current = (): Config => readConfig(config)
 
   /** Timers and in-flight work belonging to this plugin instance. */
   let stopped = false
@@ -640,7 +766,10 @@ export function apply(ctx: Context, config: Config): void {
   // var stays authoritative and never falls back.
   const atRestKeysFor = (variant: WorkBuddyVariant): WorkBuddyAtRestKeyProvider => atRestKeyProviderFor(variant)
   const runtimes = WORKBUDDY_VARIANTS.map(variant => createVariantRuntime(
-    config,
+    // The *resolved* config, not the raw parsed one: on 0.1.7 each field of the
+    // raw object is a `Volatile` reference, so reading `config.authFile`
+    // directly would yield a reference object rather than the path string.
+    current(),
     variant,
     () => current(),
     id => lastIdentities.get(id),
@@ -848,70 +977,100 @@ export function apply(ctx: Context, config: Config): void {
   })
 
 
-  // Each settings section is what makes its namespace "served", which is how
-  // `settings.yaml` and the TUI `/settings` read this plugin's fields — and,
-  // on DSH 0.1.5, how the settings Plugins tab finds this plugin's cards (the
-  // tab dispatches `settings.plugin.item` by served namespace, one card per
+  // Settings wiring, in two host generations.
+  //
+  // On DSH 0.1.6 and earlier the plugin *registers* a section per variant:
+  // `settings.installSection` is what makes the namespace "served", which is
+  // how `settings.yaml` and the TUI `/settings` read these fields — and, on
+  // 0.1.5, how the settings Plugins tab finds the plugin's cards (the tab
+  // dispatches `settings.plugin.item` by served namespace, one card per
   // namespace, and never interprets one). One section per variant: each owns
   // its own fields, so a shared namespace would collapse the two variants'
-  // distinct settings onto one — and on 0.1.5 their two cards onto one.
-  // (The Models settings page does not join on these on any version — the
-  // plugin registers no configurable-provider directory entry, so that page
-  // lists neither provider.)
+  // distinct settings onto one.
   //
-  // DSH 0.1.2 moved the helper from a free function (`installSettingsSection`)
-  // onto the provider service (`settings.installSection`), so the wiring now has
-  // to wait for a settings service to exist — exactly what the inject below
-  // does. Without one the plugin still serves its models; it simply has no
-  // user-editable sections, as before.
+  // DSH 0.1.7 removed that API. There is no registration call to make: the
+  // host's `SettingsForms` service derives a form from this plugin's exported
+  // `Config` directly, for the fields marked `.volatile()` (see
+  // {@link AUTH_FILE_FIELD}). What a 0.1.7 host still needs is the *reaction*
+  // — the plugin must re-point its stores and re-apply the context-window
+  // preference after the Loader swaps in edited values, which is what
+  // `loader/volatile-update` announces. The kernel also imports a pre-0.1.7
+  // `settings.yaml` into the active profile on its own, so stored preferences
+  // carry across the upgrade without help here.
+  //
+  // Both paths converge on the same `repointStores` work below.
   ctx.inject(['settings'], settingsCtx => {
-    /*
-     * DSH 0.1.7 removed the provider-service section API (`installSection`,
-     * `update`) without a replacement this plugin can drive. Calling it there
-     * would throw mid-inject, so the API is feature-detected: 0.1.5 and 0.1.6
-     * install both legacy sections as before, while a 0.1.7 host degrades to a
-     * settings-less provider — provider, picker, visibility, and the context
-     * rows all keep working; only the two settings sections and the
-     * maximum-context preference are absent, and without an exception.
-     */
-    if (typeof settingsCtx.settings.installSection !== 'function') {
-      ctx.logger.warn('dsh-workbuddy-connect: host settings service has no installSection API; per-variant settings and the maximum-context preference are unavailable')
-      return
-    }
-    legacySettingsAvailable = true
-    /** Section sources; each falls back to its own slice when its side unloads. */
-    const sources: { cn: () => Config, ai: () => Config } = {
-      cn: () => config,
-      ai: () => config,
-    }
-    /** Merge both sections into the whole config the rest of the plugin reads. */
-    const merged = (): Config => ({
-      ...sources.cn().authFile === undefined ? {} : { authFile: sources.cn().authFile },
-      ...sources.cn().probeConsent === undefined ? {} : { probeConsent: sources.cn().probeConsent },
-      ...sources.ai().authFileAI === undefined ? {} : { authFileAI: sources.ai().authFileAI },
-      ...sources.ai().useMaximumContextWindow === undefined ? {} : { useMaximumContextWindow: sources.ai().useMaximumContextWindow },
-    })
     const applyMaximumContextWindow = (next: Config): void => {
       const runtime = runtimes.find(candidate => candidate.variant.id !== CN_VARIANT.id)
       if (runtime?.catalog.setUseMaximumContextWindow(next.useMaximumContextWindow === true)) runtime.invalidate()
     }
+    /** Re-point every store at its (possibly just-edited) auth file, and re-apply the window preference. */
     const repointStores = (): void => {
-      const next = merged()
+      const next = readConfig(current())
       applyMaximumContextWindow(next)
       for (const runtime of runtimes) {
         runtime.store.setDesktopPath(configuredAuthFile(next, runtime.variant))
       }
     }
-    settingsCtx.settings.installSection(ctx, WORKBUDDY_SETTINGS_NS, CN_SECTION, config, {
-      setSource(source) { sources.cn = source as () => Config; current = merged },
-      onChange: repointStores,
-    })
-    settingsCtx.settings.installSection(ctx, WORKBUDDY_AI_SETTINGS_NS, AI_SECTION, config, {
-      setSource(source) { sources.ai = source as () => Config; current = merged },
-      onChange: repointStores,
+
+    const installSection = legacyInstallSectionOf(settingsCtx.settings)
+    if (installSection !== undefined) {
+      legacySettingsAvailable = true
+      /** Section sources; each falls back to its own slice when its side unloads. */
+      const sources: { cn: () => Config, ai: () => Config } = {
+        cn: () => readConfig(config),
+        ai: () => readConfig(config),
+      }
+      /** Merge both sections into the whole config the rest of the plugin reads. */
+      const merged = (): Config => ({
+        ...sources.cn().authFile === undefined ? {} : { authFile: sources.cn().authFile },
+        ...sources.cn().probeConsent === undefined ? {} : { probeConsent: sources.cn().probeConsent },
+        ...sources.ai().authFileAI === undefined ? {} : { authFileAI: sources.ai().authFileAI },
+        ...sources.ai().useMaximumContextWindow === undefined ? {} : { useMaximumContextWindow: sources.ai().useMaximumContextWindow },
+      })
+      const bound = installSection.bind(settingsCtx.settings)
+      bound(ctx, WORKBUDDY_SETTINGS_NS, CN_SECTION, readConfig(config), {
+        setSource(source) { sources.cn = source; current = merged },
+        onChange: repointStores,
+      })
+      bound(ctx, WORKBUDDY_AI_SETTINGS_NS, AI_SECTION, readConfig(config), {
+        setSource(source) { sources.ai = source; current = merged },
+        onChange: repointStores,
+      })
+      setMaximumContextWindow = async enabled => {
+        await settingsCtx.settings.update(WORKBUDDY_AI_SETTINGS_NS, { useMaximumContextWindow: enabled })
+        return { state: 'updated' }
+      }
+      return
+    }
+
+    /*
+     * DSH 0.1.7+: forms come from the volatile `Config` schema, so both
+     * preferences are always persistable on such a host. `current()` re-reads
+     * the parsed config through the reference the Loader replaced, which is
+     * why the event handler recomputes the snapshot rather than closing over
+     * the original `config` argument.
+     *
+     * `loader/volatile-update` is a real Loader event (emitted by
+     * `@deepseek-ai/cordis-plugin-loader` after it swaps volatile values in)
+     * but it is not declared in the public event map this package compiles
+     * against — `dsh-llm-pi-ai` subscribes to it from untyped JavaScript for
+     * the same reason. Subscribing through a structural view keeps the call
+     * type-safe here without depending on an undeclared augmentation.
+     */
+    legacySettingsAvailable = true
+    current = () => readConfig(config)
+    const onVolatileUpdate = (ctx as unknown as {
+      on(event: string, listener: () => void): () => void
+    }).on
+    onVolatileUpdate.call(ctx, 'loader/volatile-update', () => {
+      repointStores()
     })
     setMaximumContextWindow = async enabled => {
-      await settingsCtx.settings.update(WORKBUDDY_AI_SETTINGS_NS, { useMaximumContextWindow: enabled })
+      // `SettingsForms` keys each form by the owning Loader entry's id, which is
+      // the `id` this plugin's insert patch declares (`llm-workbuddy`), not the
+      // package name.
+      await settingsCtx.settings.update(WORKBUDDY_ENTRY_ID, { useMaximumContextWindow: enabled })
       return { state: 'updated' }
     }
   })

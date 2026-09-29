@@ -70,6 +70,7 @@ WorkBuddy 中模型的推理档位信息目前分散在上游接口与客户端�
 
 | 插件版本 | 要求的 DSH 核心 | 桌面 App |
 |---|---|---|
+| **0.7.0（0.1.7 内核适配）** | `0.1.5-rc.1` / `rc.2` / `rc.3`；`0.1.6-alpha` 系列与 `0.1.6` 正式版；`0.1.7-alpha` / `rc` 系列与 `0.1.7` 正式版；已实测 `0.2.0-rc.1`。**自本版起，0.1.7 的设置表单改为由插件 `Config` schema 自动派生**（见下方说明）；更新的 prerelease（如 `0.1.8-alpha.x`）不自动覆盖 | `2.0.7`+ 可直接使用 |
 | **0.6.0（双界面自适应）** | `0.1.5-rc.1` / `rc.2` / `rc.3`；`0.1.6-alpha` 系列（含 `alpha.1` / `alpha.2`）与 `0.1.6` 正式版；已实测 `0.1.7-alpha.1`（`0.1.7` 正式版同样在范围内）。**更新的 prerelease（如 `0.1.8-alpha.x`）不自动覆盖**，需插件显式跟进 peer range 后才支持 | `2.0.7`+ 可直接使用；搭载 `0.1.6+` 核心的桌面版发布后同样适用 |
 | **0.3.2 – 0.5.4**（国际版支持自 `0.5.0`） | `0.1.5-rc.1` 系列（不支持 `0.1.6+`，见 [#41](https://github.com/corrinehu/dsh-workbuddy-connect/issues/41)） | `2.0.7`+（内置核心已跟进 `0.1.5-rc.1`） |
 | **0.3.0 – 0.3.1** | `0.1.2-rc.1` | `2.0.5` |
@@ -88,7 +89,7 @@ WorkBuddy 中模型的推理档位信息目前分散在上游接口与客户端�
   └─ 聊天模型选择器
       └─ WorkBuddy / WorkBuddy AI 分组 ✅
 
-  DSH 0.1.6+ + 本插件
+  DSH 0.1.6 + 本插件
   ├─ 设置 → 模型
   │   └─ 不显示 WorkBuddy 两行      ← 有意如此，两代行为统一
   ├─ 设置 → 内置插件
@@ -98,10 +99,28 @@ WorkBuddy 中模型的推理档位信息目前分散在上游接口与客户端�
   │   └─ DSH WorkBuddy AI Connect   ✅ 新配置入口（国际版）
   └─ 聊天模型选择器
       └─ WorkBuddy / WorkBuddy AI 分组 ✅
+
+  DSH 0.1.7+ + 本插件
+  ├─ 设置 → 插件 → workbuddy-connect
+  │   └─ 配置表单                    ✅ 由插件 Config schema 自动派生
+  │       ├─ authFile                （国内版认证文件）
+  │       ├─ authFileAI              （国际版认证文件）
+  │       ├─ probeConsent            （探针授权）
+  │       └─ useMaximumContextWindow （最大上下文窗口）
+  └─ 聊天模型选择器
+      └─ WorkBuddy / WorkBuddy AI 分组 ✅
   ```
 
+  > **0.1.7 的设置变化**：DSH 0.1.7 移除了插件自行注册设置分区的旧接口
+  > （`settings.installSection`），改为由宿主从插件导出的 `Config` schema
+  > 自动生成表单。因此旧版那种「每个变体一张卡片」的双分区形态在 0.1.7 上
+  > 不再存在，取而代之的是**一个表单里的四个字段**，功能等价。字段必须标记
+  > `.volatile()` 才会出现在表单里，这也是本插件对 0.1.7 的适配点之一。
+  > 旧的 `settings.yaml` 分区由内核自动导入当前 profile，无需手工迁移。
+
 - 自 `0.6.0` 起，Models 设置页不再显示 WorkBuddy / WorkBuddy AI 的不可编辑卡片（两代核心行为一致）；模型选择器、`/model` 与对话调用不受影响。
-- DSH `0.1.5` / `0.1.6` / `0.1.7` 的用户，安装最新版即可：`dsh plugin --profile web add dsh-workbuddy-connect`
+- DSH `0.1.5` / `0.1.6` / `0.1.7` / `0.2.0-rc.1` 的用户，安装最新版即可：`dsh plugin --profile web add @mirocolo/dsh-workbuddy-connect`
+- **0.1.7 起设置入口的位置变了**：不再有插件自己注册的两个分区，改为由 DSH 从插件 `Config` schema 自动生成一个表单（字段与旧版一致：CN 认证文件、国际版认证文件、探针授权、最大上下文窗口）。旧的 `settings.yaml` 分区会被 DSH 内核自动导入当前 profile，无需手工迁移。
 - 还在用 DSH `0.1.2-rc.1` 的用户，请停留在 `0.3.1`：`dsh plugin --profile web add dsh-workbuddy-connect@0.3.1`
 - 还在用 DSH `0.1.1-rc.2` 的用户，请停留在 `0.2.6`：`dsh plugin --profile web add dsh-workbuddy-connect@0.2.6`
 - 桌面 App 自 `2.0.7` 起内置核心已是 `0.1.5-rc.1`，可直接使用最新版插件；`2.0.5` 及更早的 App（内置 `0.1.2-rc.1`）请继续使用 `0.3.1`

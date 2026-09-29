@@ -1,29 +1,41 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import LlmRuntime from '@deepseek-ai/dsh-llm'
-import SettingsProvider from '@deepseek-ai/dsh-settings'
-import type { SettingsNamespace } from '@deepseek-ai/dsh-settings'
 import * as WorkBuddy from '../src/index.ts'
+import { FileSettingsForms, MemorySettingsForms } from './settings-double.ts'
 
-class MemorySettings extends SettingsProvider {
-  readonly writable = true
-  private storedDocument: Record<string, unknown> = {}
-
-  protected load(): Promise<Record<string, unknown>> {
-    return Promise.resolve(structuredClone(this.storedDocument))
-  }
-
-  protected persist(ns: SettingsNamespace, section: Record<string, unknown>): Promise<void> {
-    this.storedDocument[ns] = structuredClone(section)
-    return Promise.resolve()
-  }
-}
 
 let context: Context | undefined
 let root: string | undefined
+
+/** Reach the installed settings double, the way the plugin reaches the host service. */
+function settingsFormsOf(ctx: Context): MemorySettingsForms {
+  return ctx.settings as unknown as MemorySettingsForms
+}
+
+/**
+ * The parsed config object the WorkBuddy plugin under test is holding.
+ *
+ * Located through `ctx.registry` (how the real Loader addresses an entry)
+ * rather than assumed to be the literal handed to `ctx.plugin`: Cordis parses
+ * that literal into a fresh object whose `.volatile()` fields are references,
+ * and it is the parsed object an edit has to commit into. The plugin is
+ * identified by its `authFileAI` field, which no other plugin in these tests
+ * declares.
+ */
+function pluginConfigOf(ctx: Context): Record<string, unknown> {
+  for (const runtime of ctx.registry.values()) {
+    for (const fiber of runtime.fibers) {
+      const config = (fiber as unknown as { config?: Record<string, unknown> }).config
+      if (config !== undefined && 'authFileAI' in config) return config
+    }
+  }
+  throw new Error('the WorkBuddy plugin config was not found in the registry')
+}
 
 /** A desktop-shaped credential document for one upstream region. */
 function credentialDocument(domain: string): string {
@@ -56,6 +68,30 @@ afterEach(async () => {
   vi.unstubAllGlobals()
 })
 
+/**
+ * The field names {@link WorkBuddy.Config} marks `.volatile()`.
+ *
+ * `toJSON()` serializes a reference graph (`{ uid, refs }`), so the fields are
+ * reached through the root object's `dict` index into `refs`. Only volatile
+ * fields render in a 0.1.7 form, which is why the assertion below is the
+ * meaningful one: a field without the flag would silently disappear from the UI.
+ */
+function volatileFieldNames(): string[] {
+  // Cast through `unknown`: `toJSON()`'s declared type describes the live
+  // schema graph, while this reads its serialized form, which is a plain
+  // reference table.
+  const serialized = WorkBuddy.Config.toJSON() as unknown as {
+    uid?: number
+    refs?: Record<string, { dict?: Record<string, number>, meta?: { volatile?: boolean } }>
+  }
+  const rootSchema = serialized.refs?.[String(serialized.uid)]
+  const names: string[] = []
+  for (const [name, index] of Object.entries(rootSchema?.dict ?? {})) {
+    if (serialized.refs?.[String(index)]?.meta?.volatile === true) names.push(name)
+  }
+  return names
+}
+
 describe('WorkBuddy Host settings integration', () => {
   it('restores the saved maximum-window preference after restarting and can disable it', async () => {
     root = await mkdtemp(join(tmpdir(), 'workbuddy-context-restart-'))
@@ -67,15 +103,18 @@ describe('WorkBuddy Host settings integration', () => {
     vi.stubEnv('WORKBUDDY_AUTH_FILE', join(root, 'absent-cn.info'))
     vi.stubEnv('WORKBUDDY_AI_AUTH_FILE', aiFile)
     vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('offline in tests') }))
-    class FileSettings extends SettingsProvider {
-      readonly writable = true
-      protected async load(): Promise<Record<string, unknown>> {
-        return JSON.parse(await readFile(settingsFile, 'utf8'))
+    class FileSettings extends FileSettingsForms {
+      constructor(ctx: Context) {
+        super(ctx, settingsFile)
       }
-      protected async persist(ns: SettingsNamespace, section: Record<string, unknown>): Promise<void> {
-        const document = await this.load()
-        document[ns] = section
-        await writeFile(settingsFile, JSON.stringify(document))
+    }
+    /** The values a previous boot left in the profile patch, if any. */
+    const storedConfig = (): Record<string, unknown> => {
+      try {
+        const document = JSON.parse(readFileSync(settingsFile, 'utf8')) as Record<string, unknown>
+        return (document[WorkBuddy.WORKBUDDY_ENTRY_ID] ?? {}) as Record<string, unknown>
+      } catch {
+        return {}
       }
     }
     const boot = async (): Promise<Context> => {
@@ -83,10 +122,17 @@ describe('WorkBuddy Host settings integration', () => {
       context = ctx
       await ctx.plugin(LlmRuntime)
       await ctx.plugin(FileSettings)
-      await ctx.plugin(WorkBuddy, {})
+      // Seeded from the stored patch so a restart starts from what was saved —
+      // the re-resolve the Loader performs on boot. The plugin then parses this
+      // into its own config object (each field becoming a `Volatile` reference),
+      // and *that* parsed object is what an edit must commit into.
+      await ctx.plugin(WorkBuddy, { ...storedConfig() } as never)
       await vi.waitFor(async () => {
         expect((await ctx.llm.listModels('workbuddy-ai')).length).toBeGreaterThan(0)
       })
+      // Bind the config the plugin actually holds, located through the registry
+      // rather than assumed to be the literal passed to `ctx.plugin`.
+      settingsFormsOf(ctx).bindEntry({ config: pluginConfigOf(ctx) })
       return ctx
     }
     let ctx = await boot()
@@ -99,13 +145,15 @@ describe('WorkBuddy Host settings integration', () => {
     expect((await ctx.llm.resolveModelInfo('workbuddy-ai', 'deepseek-v4.1-flash')).context?.contextWindow).toBe(1_000_000)
     // An explicit opt-out must survive restarts: the flipped default may not
     // resurrect the preference the user turned off.
-    await ctx.settings.update('workbuddy-ai', { useMaximumContextWindow: false })
+    await settingsFormsOf(ctx).update(WorkBuddy.WORKBUDDY_ENTRY_ID, { useMaximumContextWindow: false })
     await vi.waitFor(async () => {
       expect((await ctx.llm.resolveModelInfo('workbuddy-ai', 'deepseek-v4.1-flash')).context?.contextWindow).toBe(300_000)
     })
+    console.log('DOC AFTER UPDATE:', readFileSync(settingsFile, 'utf8'))
     await ctx.fiber.dispose()
     ctx = await boot()
-    expect(ctx.settings.get('workbuddy-ai')).toMatchObject({ useMaximumContextWindow: false })
+    console.log('DOC AT RESTART:', readFileSync(settingsFile, 'utf8'))
+    expect(settingsFormsOf(ctx).get(WorkBuddy.WORKBUDDY_ENTRY_ID)).toMatchObject({ useMaximumContextWindow: false })
     expect((await ctx.llm.resolveModelInfo('workbuddy-ai', 'deepseek-v4.1-flash')).context?.contextWindow).toBe(300_000)
   })
 
@@ -128,7 +176,7 @@ describe('WorkBuddy Host settings integration', () => {
     const ctx = new Context()
     context = ctx
     await ctx.plugin(LlmRuntime)
-    await ctx.plugin(MemorySettings)
+    await ctx.plugin(MemorySettingsForms)
     await ctx.plugin(WorkBuddy, {})
 
     // Registration rides on the loopback shim's listening event.
@@ -142,10 +190,13 @@ describe('WorkBuddy Host settings integration', () => {
     expect(ctx.llm.listConfigurableProviders().map(entry => entry.provider))
       .not.toContain('workbuddy')
 
-    // The section still exists: it is what `settings.yaml` and the TUI
-    // `/settings` read `authFile` from, independent of the Models page.
-    const descriptor = ctx.settings.describe().find(entry => entry.ns === WorkBuddy.WORKBUDDY_SETTINGS_NS)
-    expect(descriptor).toBeDefined()
+    // This plugin's editable fields come from its exported `Config` schema: on
+    // 0.1.7 there is no namespace registration, and `SettingsForms` renders the
+    // form from that schema, keyed by the Loader entry id. Asserted against the
+    // plugin's own schema so this stays a statement about *this package's*
+    // contract rather than the host's internals.
+    expect(volatileFieldNames()).toEqual(expect.arrayContaining(
+      ['authFile', 'authFileAI', 'probeConsent', 'useMaximumContextWindow']))
 
     const models = await ctx.llm.listModels('workbuddy')
     expect(models.map(model => model.id)).toContain('hy3')
@@ -185,10 +236,10 @@ describe('WorkBuddy Host settings integration', () => {
     expect(modalities.get('hy3')).toContain('image')
     expect(modalities.get('glm-5.1')).toContain('image')
 
-    // A settings write validates against the schema and persists.
-    await ctx.settings.update(WorkBuddy.WORKBUDDY_SETTINGS_NS, { authFile: '/tmp/other-workbuddy.info' })
-    const updated = ctx.settings.describe().find(entry => entry.ns === WorkBuddy.WORKBUDDY_SETTINGS_NS)
-    expect((updated?.value as Record<string, unknown>)['authFile']).toBe('/tmp/other-workbuddy.info')
+    // A settings write goes through the entry-keyed form and persists.
+    await settingsFormsOf(ctx).update(WorkBuddy.WORKBUDDY_ENTRY_ID, { authFile: '/tmp/other-workbuddy.info' })
+    expect(settingsFormsOf(ctx).get(WorkBuddy.WORKBUDDY_ENTRY_ID))
+      .toMatchObject({ authFile: '/tmp/other-workbuddy.info' })
   })
 
   /**
@@ -217,7 +268,7 @@ describe('WorkBuddy Host settings integration', () => {
     const ctx = new Context()
     context = ctx
     await ctx.plugin(LlmRuntime)
-    await ctx.plugin(MemorySettings)
+    await ctx.plugin(MemorySettingsForms)
     await ctx.plugin(WorkBuddy, {})
 
     await vi.waitFor(() => {
@@ -243,23 +294,14 @@ describe('WorkBuddy Host settings integration', () => {
     // 0.1.6+ ignores that pairing — its Plugins page renders the bundle's
     // `plugins.bundle.config` entry by package name — and the Models page
     // joins on neither: no configurable-provider entry is made.)
-    const served = new Set(ctx.settings.describe().map(entry => entry.ns))
-    for (const variant of WorkBuddy.WORKBUDDY_VARIANTS) {
-      expect(served, `variant "${variant.id}" must own a served settings namespace (its 0.1.5 card key and its fields)`).toContain(variant.id)
-    }
-    expect(served).toContain(WorkBuddy.WORKBUDDY_AI_SETTINGS_NS)
-
-    // Each section owns only its own fields, so one card's form cannot edit the
-    // other's path. `describe()` reports the schema as schemastery's ref graph;
-    // the root object's `dict` is the field map.
-    const fieldsOf = (ns: string): string[] => {
-      const descriptor = ctx.settings.describe().find(entry => entry.ns === ns)
-      const root = (descriptor?.schema as { refs?: Record<string, { dict?: Record<string, unknown> }>, uid?: string } | undefined)?.refs?.[String((descriptor?.schema as { uid?: number } | undefined)?.uid)]
-      return Object.keys(root?.dict ?? {})
-    }
-    expect(fieldsOf('workbuddy')).toContain('authFile')
-    expect(fieldsOf('workbuddy')).not.toContain('authFileAI')
-    expect(fieldsOf('workbuddy-ai')).toEqual(['authFileAI', 'useMaximumContextWindow'])
+    // On DSH 0.1.7 there is no per-variant section registration: `SettingsForms`
+    // derives exactly one form per Loader entry, from the plugin's exported
+    // `Config` schema, and that single form carries all four fields. The
+    // per-variant split that 0.1.5/0.1.6 expressed through two namespaces is
+    // therefore not a property of this host generation at all — what must hold
+    // here is that every field is present and volatile.
+    expect(volatileFieldNames().sort())
+      .toEqual(['authFile', 'authFileAI', 'probeConsent', 'useMaximumContextWindow'])
 
     // A write through one section must reach ONLY that variant's store. The
     // schema assertions above prove the two forms are split; this proves the
@@ -275,7 +317,7 @@ describe('WorkBuddy Host settings integration', () => {
     // "reached some store".
     const wrongRegionForAi = join(root, 'cn-credential-for-ai.info')
     await writeFile(wrongRegionForAi, credentialDocument('copilot.tencent.com'))
-    await ctx.settings.update('workbuddy-ai', { authFileAI: wrongRegionForAi })
+    await settingsFormsOf(ctx).update(WorkBuddy.WORKBUDDY_ENTRY_ID, { authFileAI: wrongRegionForAi })
     // A bounded settle rather than waitFor: if the wiring were broken the group
     // would simply never change, and an assertion states that plainly instead
     // of surfacing as a timeout. Two sweeps at the 100 ms interval above.
@@ -285,7 +327,7 @@ describe('WorkBuddy Host settings integration', () => {
 
     // And the setting is genuinely read back through the merged config: putting
     // a valid international file back restores the group.
-    await ctx.settings.update('workbuddy-ai', { authFileAI: aiFile })
+    await settingsFormsOf(ctx).update(WorkBuddy.WORKBUDDY_ENTRY_ID, { authFileAI: aiFile })
     await vi.waitFor(async () => {
       expect((await ctx.llm.listModels('workbuddy-ai')).length).toBeGreaterThan(0)
     }, { timeout: 10_000 })
@@ -310,7 +352,7 @@ describe('WorkBuddy Host settings integration', () => {
     // gets the largest declared window, and an explicit opt-out restores the
     // upstream's own default.
     expect((await ctx.llm.resolveModelInfo('workbuddy-ai', 'deepseek-v4.1-flash')).context?.contextWindow).toBe(1_000_000)
-    await ctx.settings.update('workbuddy-ai', { useMaximumContextWindow: false })
+    await settingsFormsOf(ctx).update(WorkBuddy.WORKBUDDY_ENTRY_ID, { useMaximumContextWindow: false })
     await vi.waitFor(async () => {
       expect((await ctx.llm.resolveModelInfo('workbuddy-ai', 'deepseek-v4.1-flash')).context?.contextWindow).toBe(300_000)
     })
@@ -330,7 +372,7 @@ describe('WorkBuddy Host settings integration', () => {
     const ctx = new Context()
     context = ctx
     await ctx.plugin(LlmRuntime)
-    await ctx.plugin(MemorySettings)
+    await ctx.plugin(MemorySettingsForms)
     await ctx.plugin(WorkBuddy, {})
 
     await vi.waitFor(() => {
@@ -346,8 +388,10 @@ describe('WorkBuddy Host settings integration', () => {
     // restart. (No configurable-provider directory entry is made, by design.)
     expect(ctx.llm.listProviders().map(provider => provider.id))
       .toEqual(expect.arrayContaining(['workbuddy', 'workbuddy-ai']))
-    // And the settings section is still there to explain how to sign in.
-    expect(ctx.settings.describe().find(entry => entry.ns === WorkBuddy.WORKBUDDY_SETTINGS_NS)).toBeDefined()
+    // And the plugin's editable fields are still there to explain how to sign
+    // in — the form comes from the exported schema, so a signed-out variant
+    // never costs the user the settings surface.
+    expect(volatileFieldNames()).toContain('authFile')
   })
 
   /**
@@ -367,7 +411,7 @@ describe('WorkBuddy Host settings integration', () => {
     const ctx = new Context()
     context = ctx
     await ctx.plugin(LlmRuntime)
-    await ctx.plugin(MemorySettings)
+    await ctx.plugin(MemorySettingsForms)
     await ctx.plugin(WorkBuddy, {})
 
     const models = await (async () => {
@@ -398,7 +442,7 @@ describe('WorkBuddy Host settings integration', () => {
     const ctx = new Context()
     context = ctx
     await ctx.plugin(LlmRuntime)
-    await ctx.plugin(MemorySettings)
+    await ctx.plugin(MemorySettingsForms)
     // Simulate the 0.1.7 settings service: the 0.1.2-era section API is gone.
     // (`installSection` is a prototype method on this provider, so a plain
     // assignment — not `delete` — is what hides it.)
@@ -467,7 +511,7 @@ describe('WorkBuddy Host settings integration', () => {
     const ctx = new Context()
     context = ctx
     await ctx.plugin(LlmRuntime)
-    await ctx.plugin(MemorySettings)
+    await ctx.plugin(MemorySettingsForms)
     ctx.provide('attachments', attachmentStore as never)
     await ctx.plugin(WorkBuddy, {})
     await vi.waitFor(() => {
@@ -580,7 +624,7 @@ describe('WorkBuddy Host settings integration', () => {
     const ctx = new Context()
     context = ctx
     await ctx.plugin(LlmRuntime)
-    await ctx.plugin(MemorySettings)
+    await ctx.plugin(MemorySettingsForms)
     ctx.provide('attachments', attachmentStore as never)
     // The fs service is present — it just cannot map this host path.
     ctx.provide('fs', { processPathFromHostPath: () => undefined } as never)

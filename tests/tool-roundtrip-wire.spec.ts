@@ -86,13 +86,20 @@ function assistantToolCalls(
 }
 
 /**
- * One Harness tool-result message, in the 0.1.5 host contract: a user-role
- * message whose source is the tool seat, one result block per message.
+ * One Harness tool-result message, in the 0.1.7 host contract: a first-class
+ * `role: 'tool'` message carrying the answered call id at the top level and
+ * its model-facing text as ordinary content blocks.
+ *
+ * DSH 0.1.6 and earlier expressed the same thing as a `role: 'user'` message
+ * wrapping a single `tool-result` block; 0.1.7 promoted it to a role of its
+ * own (`toolCallId` moved out of the block onto the message), which is what
+ * `dsh-llm-pi-ai`'s `toolResultOf` reads.
  */
 function toolResultMessage(id: string, text: string): Record<string, unknown> {
   return {
-    role: 'user',
-    content: [{ type: 'tool-result', toolCallId: id, content: [{ type: 'text', text }], isError: false }],
+    role: 'tool',
+    toolCallId: id,
+    content: [{ type: 'text', text }],
     source: { kind: 'tool', callId: id },
   }
 }

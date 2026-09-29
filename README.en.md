@@ -60,6 +60,7 @@ Prerequisite: the WorkBuddy desktop app is installed and signed in. The plugin r
 
 | Plugin | Required DSH core | Desktop app |
 |---|---|---|
+| **0.7.0 (0.1.7 core)** | `0.1.5-rc.1` / `rc.2` / `rc.3`; the `0.1.6-alpha` line and `0.1.6` stable; the `0.1.7-alpha` / `rc` lines and `0.1.7` stable; verified against `0.2.0-rc.1`. **From this release a 0.1.7 host derives the settings form from the plugin's `Config` schema** (see below); newer prereleases (e.g. `0.1.8-alpha.x`) are NOT covered automatically | `2.0.7`+ works today |
 | **0.6.0 (dual-UI adaptive)** | `0.1.5-rc.1` / `rc.2` / `rc.3`; the `0.1.6-alpha` line (incl. `alpha.1` / `alpha.2`) and `0.1.6` stable; verified against `0.1.7-alpha.1` (`0.1.7` stable is inside the range too). **Newer prereleases (e.g. `0.1.8-alpha.x`) are NOT covered automatically** — the plugin must extend its peer range first | `2.0.7`+ works today; desktop builds bundling `0.1.6+` will work too |
 | **0.3.2 – 0.5.4** (international support since `0.5.0`) | the `0.1.5-rc.1` line only (no `0.1.6+`; see [#41](https://github.com/corrinehu/dsh-workbuddy-connect/issues/41)) | `2.0.7`+ (bundled core `0.1.5-rc.1`) |
 | **0.3.0 – 0.3.1** | `0.1.2-rc.1` | `2.0.5` |
@@ -79,7 +80,7 @@ Prerequisite: the WorkBuddy desktop app is installed and signed in. The plugin r
   └─ chat model picker
       └─ WorkBuddy / WorkBuddy AI groups ✅
 
-  DSH 0.1.6+ + this plugin
+  DSH 0.1.6 + this plugin
   ├─ Settings → Models
   │   └─ no WorkBuddy rows          ← intentional, consistent across both generations
   ├─ Settings → Built-in Plugins
@@ -91,8 +92,29 @@ Prerequisite: the WorkBuddy desktop app is installed and signed in. The plugin r
       └─ WorkBuddy / WorkBuddy AI groups ✅
   ```
 
+  DSH 0.1.7+ + this plugin
+  ├─ Settings → Plugins → workbuddy-connect
+  │   └─ config form                ✅ derived from the plugin's `Config` schema
+  │       ├─ authFile                  (CN auth file)
+  │       ├─ authFileAI                (international auth file)
+  │       ├─ probeConsent              (probe authorization)
+  │       └─ useMaximumContextWindow   (maximum context window)
+  └─ chat model picker
+      └─ WorkBuddy / WorkBuddy AI groups ✅
+  ```
+
+  > **What changed on 0.1.7**: DSH 0.1.7 removed the API that let a plugin register
+  > its own settings sections (`settings.installSection`) in favour of deriving a form
+  > from the plugin's exported `Config` schema. The old layout — two cards, one per
+  > variant — therefore does not exist on 0.1.7; it is replaced by **four fields in one
+  > form**, with equivalent behaviour. A field must be marked `.volatile()` to appear
+  > at all, which is one of this release's adaptation points. A pre-0.1.7
+  > `settings.yaml` is imported into the active profile by the kernel — no manual
+  > migration.
+
 - From `0.6.0` on, the Models settings page no longer shows the non-editable WorkBuddy / WorkBuddy AI cards (consistent across both core generations); the model picker, `/model`, and chat calls are unaffected.
-- On DSH `0.1.5` / `0.1.6` / `0.1.7`, just install the latest: `dsh plugin --profile web add dsh-workbuddy-connect`
+- On DSH `0.1.5` / `0.1.6` / `0.1.7` / `0.2.0-rc.1`, just install the latest: `dsh plugin --profile web add @mirocolo/dsh-workbuddy-connect`
+- **The settings surface moved on 0.1.7**: instead of two sections the plugin used to register itself, DSH now generates one form from the plugin's `Config` schema, with the same four fields (CN auth file, international auth file, probe consent, maximum context window). A pre-0.1.7 `settings.yaml` is imported into the active profile by the kernel — no manual migration.
 - Still on DSH `0.1.2-rc.1`? Stay on `0.3.1`: `dsh plugin --profile web add dsh-workbuddy-connect@0.3.1`
 - Still on DSH `0.1.1-rc.2`? Stay on the older release: `dsh plugin --profile web add dsh-workbuddy-connect@0.2.6`
 - The desktop app has bundled `0.1.5-rc.1` since `2.0.7`, so it can use the latest plugin directly; `2.0.5` and earlier apps (bundled `0.1.2-rc.1`) should stay on `0.3.1`
