@@ -123,23 +123,23 @@ The plugin runs under all three DSH interfaces: **Web**, **Desktop**, and **TUI*
 
 ```sh
 # Web (recommended; ships prebuilt artifacts)
-dsh plugin --profile web add dsh-workbuddy-connect
+dsh plugin --profile web add @mirocolo/dsh-workbuddy-connect
 dsh web
 
 # or install the Web version from the GitHub source
-dsh plugin --profile web add github:corrinehu/dsh-workbuddy-connect
+dsh plugin --profile web add github:mirocolo/dsh-workbuddy-connect
 dsh web
 ```
 
 ```sh
 # Desktop (the DSH Desktop app)
-dsh plugin --profile desktop add dsh-workbuddy-connect
+dsh plugin --profile desktop add @mirocolo/dsh-workbuddy-connect
 dsh --profile desktop
 ```
 
 ```sh
 # TUI (terminal UI)
-dsh plugin --profile dsh-tui add dsh-workbuddy-connect
+dsh plugin --profile dsh-tui add @mirocolo/dsh-workbuddy-connect
 dsh --profile dsh-tui
 ```
 

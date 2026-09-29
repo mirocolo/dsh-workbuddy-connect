@@ -15,8 +15,18 @@
  * @module dsh-workbuddy-connect/update
  */
 
-export const WORKBUDDY_REPOSITORY_URL = 'https://github.com/corrinehu/dsh-workbuddy-connect'
-export const WORKBUDDY_UPDATE_PACKAGE_NAME = 'dsh-workbuddy-connect'
+/**
+ * Where this fork publishes, and which npm package it updates from.
+ *
+ * Both are the *fork's* identity, not upstream's: left pointing at the
+ * upstream repository and the unscoped package name, the update reminder
+ * would advertise another maintainer's releases — versions this package never
+ * published — as upgrades. They are fork-owned constants, so unlike the
+ * module-identity names they cannot be derived from `package.json`, and
+ * `tests/package-identity.spec.ts` pins them to it instead.
+ */
+export const WORKBUDDY_REPOSITORY_URL = 'https://github.com/mirocolo/dsh-workbuddy-connect'
+export const WORKBUDDY_UPDATE_PACKAGE_NAME = '@mirocolo/dsh-workbuddy-connect'
 export const WORKBUDDY_UPDATE_NPM_METADATA_URL = `https://registry.npmjs.org/-/package/${WORKBUDDY_UPDATE_PACKAGE_NAME}/dist-tags`
 export const WORKBUDDY_UPDATE_RELEASES_API_URL = `${WORKBUDDY_REPOSITORY_URL.replace('https://github.com', 'https://api.github.com/repos')}/releases?per_page=100`
 export const WORKBUDDY_RELEASE_PAGE_BASE = `${WORKBUDDY_REPOSITORY_URL}/releases/tag/`

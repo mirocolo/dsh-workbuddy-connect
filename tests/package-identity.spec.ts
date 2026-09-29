@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { BUNDLE_NAME } from '../src/client/index.tsx'
+import { WORKBUDDY_REPOSITORY_URL, WORKBUDDY_UPDATE_PACKAGE_NAME } from '../src/update.ts'
 
 /**
  * Guard the module-identity contract between this package's names.
@@ -29,7 +30,7 @@ import { BUNDLE_NAME } from '../src/client/index.tsx'
 describe('package name identity', () => {
   const pkg = JSON.parse(
     readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
-  ) as { name: string }
+  ) as { name: string, repository: { url: string } }
 
   it('cordis.patch.yml registers the plugin under package.json\'s name', () => {
     const patch = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
@@ -52,5 +53,18 @@ describe('package name identity', () => {
     const registered = /__ModuleLoader__\.load\(\{\s*id:\s*"([^"]+)"/.exec(source)?.[1]
     expect(registered, 'lib/client.js has no __ModuleLoader__.load banner').toBeDefined()
     expect(registered).toBe(pkg.name)
+  })
+
+  /**
+   * The update checker points at the *fork's* repository and npm package.
+   *
+   * These are the fork's own identity rather than a copy of `package.json`, so
+   * they are asserted explicitly: left pointing at upstream they would not
+   * break anything visibly, they would quietly offer another maintainer's
+   * releases — versions this package never published — as upgrades.
+   */
+  it('the update checker targets this fork, not upstream', () => {
+    expect(WORKBUDDY_UPDATE_PACKAGE_NAME).toBe(pkg.name)
+    expect(WORKBUDDY_REPOSITORY_URL).toBe(pkg.repository.url.replace(/^git\+|\.git$/g, ''))
   })
 })

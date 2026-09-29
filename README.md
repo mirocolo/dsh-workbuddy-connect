@@ -129,23 +129,23 @@ WorkBuddy 中模型的推理档位信息目前分散在上游接口与客户端�
 
 ```sh
 # Web（推荐，自带预构建产物）
-dsh plugin --profile web add dsh-workbuddy-connect
+dsh plugin --profile web add @mirocolo/dsh-workbuddy-connect
 dsh web
 
 # 或从 GitHub 源码安装 Web 版
-dsh plugin --profile web add github:corrinehu/dsh-workbuddy-connect
+dsh plugin --profile web add github:mirocolo/dsh-workbuddy-connect
 dsh web
 ```
 
 ```sh
 # Desktop（DSH Desktop 桌面版）
-dsh plugin --profile desktop add dsh-workbuddy-connect
+dsh plugin --profile desktop add @mirocolo/dsh-workbuddy-connect
 dsh --profile desktop
 ```
 
 ```sh
 # TUI（终端界面）
-dsh plugin --profile dsh-tui add dsh-workbuddy-connect
+dsh plugin --profile dsh-tui add @mirocolo/dsh-workbuddy-connect
 dsh --profile dsh-tui
 ```
 
